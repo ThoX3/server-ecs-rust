@@ -1,0 +1,8 @@
+[workspace]
+members = [
+    "shared",
+    "dedicated_server",
+    "orchestrator",
+    "gatekeeper",
+]
+resolver = "2"
