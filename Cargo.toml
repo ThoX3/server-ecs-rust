@@ -1,8 +1,6 @@
 [workspace]
 members = [
     "shared",
-    "dedicated_server",
-    "orchestrator",
-    "gatekeeper",
+    "dedicated-server"
 ]
 resolver = "2"
