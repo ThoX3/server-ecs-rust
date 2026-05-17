@@ -4,5 +4,6 @@ members = [
     "dedicated_server",
     "orchestrator",
     "gatekeeper",
+    "game_sockets",
 ]
 resolver = "2"
