@@ -5,3 +5,8 @@
 - handlers.rs : login_handler, health_handler
 - redis_pool.rs : connexion Redis, find_available_server()
 */
+
+#[tokio::main]
+async fn main() {
+    println!("Démarrage du Gatekeeper API...");
+}
