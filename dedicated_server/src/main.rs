@@ -1,10 +1,10 @@
-use bevy::app::ScheduleRunnerPlugin; // Requis pour faire tourner l'app en boucle sans fenêtre
+use bevy::app::ScheduleRunnerPlugin;
 use bevy::prelude::*;
 
 fn main() {
     App::new()
-        // Remplace MinimalPlugins par les plugins indispensables au mode headless/CLI
         .add_plugins(MinimalPlugins)
+        //.insert_resource(ServerConfig::from_env())
         .add_systems(Startup, bind_socket)
         .add_systems(Update, (receive_packets, send_heartbeat).chain())
         .run();
