@@ -119,9 +119,9 @@ Maintenir une flotte de serveurs dédiés. L'orchestrateur écoute les heartbeat
 
 - Écoute sur un port UDP configurable (`ORCH_PORT`).
 - À chaque heartbeat reçu, met à jour la clé Redis `server:<id>` avec un TTL de X secondes.
-  - Si pas de heartbeat reçu pendant X s → Redis expire la clé automatiquement.
+- Si pas de heartbeat reçu pendant X s → Redis expire la clé automatiquement.
 - Vérifie toutes les Y secondes le nombre de serveurs avec `status: available`.
-  - Si ce nombre est inférieur à `HOT_SERVERS_MIN` → spawn un nouveau processus `dedicated_server` avec un port libre.
+- Si ce nombre est inférieur à `HOT_SERVERS_MIN` → spawn un nouveau processus `dedicated_server` avec un port libre.
 
 ### Points à implémenter
 
