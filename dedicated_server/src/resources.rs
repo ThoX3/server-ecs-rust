@@ -43,7 +43,7 @@ impl ServerConfig {
 
 #[derive(Resource, Default)]
 pub struct PlayerRegistry {
-    pub players: HashMap<GameConnection, String>,
+    pub players: HashMap<GameConnection, Entity>,
 }
 
 #[derive(Resource)]

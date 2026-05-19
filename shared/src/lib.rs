@@ -8,8 +8,7 @@ pub struct Heartbeat {
     pub zone: String,
     pub player_count: usize,
     pub max_players: usize,
-    pub cpu_usage: f32,
-    pub ram_usage: f32,
+    pub status: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -28,4 +27,3 @@ pub struct JoinRequest {
 pub struct WelcomeMessage {
     pub player_id: String,
 }
-
