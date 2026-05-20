@@ -3,6 +3,7 @@ use shared::Heartbeat;
 use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::Arc;
+use std::path::Path;
 use tokio::net::UdpSocket;
 use tokio::time::{interval, Duration};
 
@@ -151,13 +152,26 @@ async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usi
 }
 
 fn spawn_server(port: u16) -> std::io::Result<()> {
-    println!("Création d'un sous-processus pour 'dedicated_server' sur le port {}...", port);
+    let exe_name = if std::env::consts::EXE_EXTENSION.is_empty() {
+        "dedicated_server".to_string()
+    } else {
+        format!("dedicated_server.{}", std::env::consts::EXE_EXTENSION)
+    };
 
-    Command::new("cargo")
-        .arg("run")
-        .arg("-p")
-        .arg("dedicated_server")
+    let bin_path = Path::new(".").join("target").join("debug").join(exe_name);
+
+    if !bin_path.exists() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("Le binaire est introuvable au chemin : {:?}. As-tu fait un 'cargo build' ?", bin_path)
+        ));
+    }
+
+    println!("Création d'un sous-processus pour le serveur dédié sur le port {}...", port);
+
+    Command::new(&bin_path)
         .env("DS_PORT", port.to_string())
+        // .current_dir("..") // Optionnel : si ton serveur a besoin de s'exécuter depuis la racine du workspace
         .spawn()?;
 
     println!("Processus serveur instancié avec succès en tâche de fond !");
