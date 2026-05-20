@@ -171,7 +171,6 @@ fn spawn_server(port: u16) -> std::io::Result<()> {
 
     Command::new(&bin_path)
         .env("DS_PORT", port.to_string())
-        // .current_dir("..") // Optionnel : si ton serveur a besoin de s'exécuter depuis la racine du workspace
         .spawn()?;
 
     println!("Processus serveur instancié avec succès en tâche de fond !");
