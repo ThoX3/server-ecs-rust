@@ -15,13 +15,11 @@ const BASE_DS_PORT: u16 = 7001;     // Port de départ pour attribuer aux nouvea
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Démarrage de l'orchestrateur...");
 
-    // Écoute sur un port UDP configurable (`ORCH_PORT`).
     let orch_port = std::env::var("ORCH_PORT")
         .unwrap_or_else(|_| "8000".to_string())
         .parse::<u16>()
         .unwrap_or(8000);
 
-    // Initialisation du Socket UDP
     let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", orch_port)).await?);
     println!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
 
@@ -30,20 +28,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis_client_shared = Arc::new(redis_client_raw);
     // -----------------------------------------------
 
-    // Lancement des deux tâches asynchrones en parallèle
     let listener_socket = socket.clone();
 
-    // On clone le pointeur de la variable partagée pour la première tâche
     let listener_redis = redis_client_shared.clone();
 
-    // Tâche A : Écoute des Heartbeats
+    // Écoute des Heartbeats
     let heartbeat_handle = tokio::spawn(async move {
         if let Err(e) = heartbeat_listener(listener_socket, listener_redis).await {
             eprintln!("Erreur dans la tâche heartbeat_listener: {:?}", e);
         }
     });
 
-    // Tâche B : Surveillance et Scaling de la flotte
+    // Surveillance et Scaling de la flotte
     let scaler_handle = tokio::spawn(async move {
         if let Err(e) = scaler_loop(redis_client_shared).await {
             eprintln!("Erreur dans la tâche scaler_loop: {:?}", e);
@@ -82,7 +78,7 @@ async fn heartbeat_listener(
                 .query_async(&mut con)
                 .await?;
 
-            println!("Heartbeat traité pour le serveur {} (Port: {}, Statut: {})", hb.id, hb.port, status);
+            println!("Heartbeat traité pour le serveur {} (Statut: {})", hb.id, status);
         }
     }
 }
@@ -162,8 +158,6 @@ fn spawn_server(port: u16) -> std::io::Result<()> {
         .arg("-p")
         .arg("dedicated_server")
         .env("DS_PORT", port.to_string())
-        .env("ZONE", "zone_A")
-        .env("MAX_PLAYERS", "100")
         .spawn()?;
 
     println!("Processus serveur instancié avec succès en tâche de fond !");
