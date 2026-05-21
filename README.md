@@ -81,12 +81,13 @@ Voici comment s'organisent les composants de l'infrastructure. Contrairement au 
 
 ## 2. Diagramme de Séquence : Authentification et Protocole de Handoff
 
-Ce diagramme illustre le cycle de vie complet : de la connexion initiale du joueur via l'API REST jusqu'au flux des messages binaires UDP lors du franchissement de la ligne médiane dans la zone de transition (*Ghost Zone*).
+Ce diagramme illustre le cycle de vie complet, divisé en trois phases distinctes : la connexion initiale, la boucle de mouvement standard, et la procédure de transfert d'autorité lorsqu'un joueur franchit une frontière entre deux shards.
 
+```text
   CLIENT          GATEKEEPER         BROKER       SERVICE SPATIAL      SHARD 0          SHARD 1
  (Joueur)        (API REST)       (Routeur UDP)      (QuadTree)     (Autorité act.) (Futur Autorité)
     │                 │                 │                 │                 │                 │
-    │─── PHASE 1 : AUTHENTIFICATION (HTTP REST) ──────────────────────────────────────────────────│
+    │─── PHASE 1 : AUTHENTIFICATION (HTTP REST) ──────────────────────────────────────────────│
     │                 │                 │                 │                 │                 │
     │ 1. POST /login  │                 │                 │                 │                 │
     ├────────────────►│                 │                 │                 │                 │
@@ -97,7 +98,7 @@ Ce diagramme illustre le cycle de vie complet : de la connexion initiale du joue
     │    {token, ip_broker, port_broker}│                 │                 │                 │
     │◄────────────────┤                 │                 │                 │                 │
     │                 │                 │                 │                 │                 │
-    │─── PHASE 2 : BOUCLE DE JEU STANDARD & HANDOFF (UDP VIA GAME_SOCKETS) ───────────────────────│
+    │─── PHASE 2 : BOUCLE DE JEU STANDARD & HANDOFF (UDP VIA GAME_SOCKETS) ───────────────────│
     │                 │                 │                 │                 │                 │
     │ 4. ClientInput (0x05)             │                 │                 │                 │
     ├──────────────────────────────────►│                 │                 │                 │
@@ -110,7 +111,7 @@ Ce diagramme illustre le cycle de vie complet : de la connexion initiale du joue
     │                 │                 │ 7. Publish Position (0x03)        │                 │
     │                 │                 │◄──────────────────────────────────┤                 │
     │ 8. Broadcast (0x04)               │ 9. PositionUpdate (0x10)          │                 │
-    │◄──────────────────────────────────┼────────────────►│                │                 │
+    │◄──────────────────────────────────┼────────────────►│                 │                 │
     │                 │                 │                 │ 10. Vérifie     │                 │
     │                 │                 │                 │     le QuadTree │                 │
     │                 │                 │                 │                 │                 │
@@ -131,6 +132,7 @@ Ce diagramme illustre le cycle de vie complet : de la connexion initiale du joue
     │                 │                 │                 │                 │ 16. Passe de    │
     │                 │                 │                 │                 │     OWNED       │
     │                 │                 │                 │                 │     à GHOST     │
+```
 ---
 
 ## Instructions de Lancement
