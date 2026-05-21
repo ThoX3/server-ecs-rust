@@ -3,12 +3,8 @@ use game_sockets::protocols::UdpBackend;
 use game_sockets::{GameNetworkEvent, GamePeer};
 use shared::{Heartbeat, JoinRequest, WelcomeMessage};
 use std::net::UdpSocket;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-use sysinfo::System;
-use std::sync::{
-    atomic::{AtomicUsize, Ordering},
-    Arc,
-};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 

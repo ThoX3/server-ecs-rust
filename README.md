@@ -13,28 +13,8 @@ Ce projet implémente une architecture de serveurs de jeu simplifiée pour un MM
 
 ## Instructions de Lancement
 
-Pour démarrer l'ensemble de l'infrastructure de bout en bout, suivez ces étapes dans l'ordre au sein de terminaux distincts :
-
-### 1. Démarrer le Registre Partagé (Redis)
-Lancez l'instance Redis officielle en tâche de fond à l'aide de Docker sur le port par défaut :
+### Démarrer l'infrastructure complète
+Lancez l'instance de notre projet complet grâce au fichier `docker-compose.yml` : 
 ```bash
-docker run -d --name redis-mmorpg -p 6379:6379 redis:7-alpine
-```
-
-### 2. Lancer l'Orchestrateur
-Pour démarrer l'orchestrateur pour qu'il initialise la flotte minimale de serveurs et commence à écouter les heartbeats UDP :
-```bash
-cargo run -p orchestrator
-```
-
-### 3. Lancer le Gatekeeper (API REST)
-Pour démarrer le point d'entrée unique pour permettre aux clients de s'authentifier :
-```bash
-cargo run -p gatekeeper
-```
-
-### 4. Lancer le Dedicated Game Server (Bevy + game_sockets)
-Pour lancer un serveur de jeu minimaliste capable d'accepter des connexions de joueurs et d'envoyer un heartbeat périodique à l'orchestrateur :
-```bash
-cargo run -p dedicated_server
+docker-compose up --build -d
 ```

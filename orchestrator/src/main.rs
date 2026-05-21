@@ -1,9 +1,7 @@
 use redis::AsyncCommands;
 use shared::Heartbeat;
-use std::net::SocketAddr;
-use std::process::Command;
 use std::sync::Arc;
-use std::path::Path;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::env;
 use std::io;
 use tokio::net::UdpSocket;
