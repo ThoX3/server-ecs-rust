@@ -2,6 +2,7 @@ use deadpool_redis::{redis::AsyncCommands, Pool};
 use shared::ServerInfo;
 
 pub async fn find_available_server(pool: &Pool, target_zone: &str) -> Option<ServerInfo> {
+    // Find an available server, preferring the target zone.
     let mut conn = pool.get().await.ok()?;
 
     // Get all keys

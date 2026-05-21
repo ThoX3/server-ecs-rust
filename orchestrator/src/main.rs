@@ -7,13 +7,14 @@ use std::path::Path;
 use tokio::net::UdpSocket;
 use tokio::time::{interval, Duration};
 
-const TTL_SECONDS: u64 = 15;        // Temps avant qu'un serveur soit considéré comme mort
-const SCALER_INTERVAL: u64 = 5;     // Fréquence de vérification de la flotte (en secondes)
-const HOT_SERVERS_MIN: usize = 2;   // Nombre minimal de serveurs vides requis
-const BASE_DS_PORT: u16 = 7001;     // Port de départ pour attribuer aux nouveaux serveurs
+const TTL_SECONDS: u64 = 15;        // Time before a server is considered dead
+const SCALER_INTERVAL: u64 = 5;     // Fleet check interval (seconds)
+const HOT_SERVERS_MIN: usize = 2;   // Minimum number of idle servers
+const BASE_DS_PORT: u16 = 7001;     // Starting port for new servers
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Boot the orchestrator and its tasks.
     println!("Démarrage de l'orchestrateur...");
 
     let orch_port = std::env::var("ORCH_PORT")
@@ -24,7 +25,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", orch_port)).await?);
     println!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
 
-    // Client Redis partagé entre les tâches
+    // Shared Redis client for all tasks.
     let redis_client_raw = redis::Client::open("redis://127.0.0.1:6379/")?;
     let redis_client_shared = Arc::new(redis_client_raw);
     // -----------------------------------------------
@@ -33,14 +34,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener_redis = redis_client_shared.clone();
 
-    // Écoute des Heartbeats
+    // Listen for heartbeats.
     let heartbeat_handle = tokio::spawn(async move {
         if let Err(e) = heartbeat_listener(listener_socket, listener_redis).await {
             eprintln!("Erreur dans la tâche heartbeat_listener: {:?}", e);
         }
     });
 
-    // Surveillance et Scaling de la flotte
+    // Monitor and scale the fleet.
     let scaler_handle = tokio::spawn(async move {
         if let Err(e) = scaler_loop(redis_client_shared).await {
             eprintln!("Erreur dans la tâche scaler_loop: {:?}", e);
@@ -56,6 +57,7 @@ async fn heartbeat_listener(
     socket: Arc<UdpSocket>,
     redis_client: Arc<redis::Client>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Receive heartbeats and update Redis.
     let mut buf = [0u8; 2048];
     let mut con = redis_client.get_multiplexed_async_connection().await?;
 
@@ -85,6 +87,7 @@ async fn heartbeat_listener(
 }
 
 async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std::error::Error>> {
+    // Periodically ensure the fleet size.
     let mut interval = interval(Duration::from_secs(SCALER_INTERVAL));
     let mut next_port_to_use = BASE_DS_PORT;
 
@@ -115,6 +118,7 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
 }
 
 async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usize, redis::RedisError> {
+    // Count available servers in Redis.
     let mut con = redis_client.get_multiplexed_async_connection().await?;
     let mut available_count = 0;
 
@@ -152,6 +156,7 @@ async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usi
 }
 
 fn spawn_server(port: u16) -> std::io::Result<()> {
+    // Spawn a dedicated server process.
     let exe_name = if std::env::consts::EXE_EXTENSION.is_empty() {
         "dedicated_server".to_string()
     } else {

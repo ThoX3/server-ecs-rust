@@ -16,6 +16,7 @@ pub struct ServerConfig {
 
 impl ServerConfig {
     pub fn from_env() -> Self {
+        // Build config from environment variables.
         dotenvy::dotenv().ok();
         let port = std::env::var("DS_PORT")
             .unwrap_or_else(|_| "7001".to_string())

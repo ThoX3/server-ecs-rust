@@ -2,7 +2,7 @@
 
 Ce projet implémente une architecture de serveurs de jeu simplifiée pour un MMORPG, répartie en quatre composants distincts qui communiquent entre eux.
 
-## 🏗️ Architecture du Projet
+## Architecture du Projet
 
 * **`shared`** : Bibliothèque contenant les structures de données communes et sérialisables (`Heartbeat`, `ServerInfo`, etc.).
 * **`dedicated_server`** : Serveur de jeu minimaliste propulsé par Bevy 0.18 et `game_sockets`.
@@ -11,7 +11,7 @@ Ce projet implémente une architecture de serveurs de jeu simplifiée pour un MM
 
 ---
 
-## 🚀 Instructions de Lancement
+## Instructions de Lancement
 
 Pour démarrer l'ensemble de l'infrastructure de bout en bout, suivez ces étapes dans l'ordre au sein de terminaux distincts :
 
