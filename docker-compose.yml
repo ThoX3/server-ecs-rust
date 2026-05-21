@@ -1,0 +1,42 @@
+version: "3.8"
+
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-mmorpg
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  gatekeeper:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gatekeeper
+    command: ["./gatekeeper"]
+    ports:
+      - "3000:3000"
+    environment:
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: orchestrator
+    command: ["./orchestrator"]
+    environment:
+      - REDIS_URL=redis://redis:6379
+      - ORCH_PORT=8000
+      - DS_BINARY_PATH=./dedicated_server
+    ports:
+      - "8000:8000/udp"
+      - "7000-7010:7000-7010/udp"
+    depends_on:
+      - redis
+
+volumes:
+  redis_data:

@@ -197,7 +197,7 @@ Exposer une API REST simple. Le Gatekeeper est le point d'entrée unique du clie
 
 **Authentification :** accepter n'importe quel `username` non vide avec le mot de passe `"1234"`.
 
-#### `GET /health`
+#### `GET /health` (ex : Invoke-RestMethod -Uri "http://localhost:3000/health" -Method Get)
 
 Retourne `{ "status": "ok" }` — utile pour vérifier que le service tourne.
 

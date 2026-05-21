@@ -4,6 +4,8 @@ use std::net::SocketAddr;
 use std::process::Command;
 use std::sync::Arc;
 use std::path::Path;
+use std::env;
+use std::io;
 use tokio::net::UdpSocket;
 use tokio::time::{interval, Duration};
 
@@ -25,7 +27,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
 
     // Client Redis partagé entre les tâches
-    let redis_client_raw = redis::Client::open("redis://127.0.0.1:6379/")?;
+    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
+    let redis_client_raw = redis::Client::open(redis_url)?;
     let redis_client_shared = Arc::new(redis_client_raw);
     // -----------------------------------------------
 
@@ -151,28 +154,16 @@ async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usi
     Ok(available_count)
 }
 
-fn spawn_server(port: u16) -> std::io::Result<()> {
-    let exe_name = if std::env::consts::EXE_EXTENSION.is_empty() {
-        "dedicated_server".to_string()
-    } else {
-        format!("dedicated_server.{}", std::env::consts::EXE_EXTENSION)
-    };
+fn spawn_server(port: u16) -> io::Result<()> {
+    let ds_path = env::var("DS_BINARY_PATH").unwrap_or_else(|_| "cargo".to_string());
 
-    let bin_path = Path::new(".").join("target").join("debug").join(exe_name);
+    let mut cmd = std::process::Command::new(&ds_path);
 
-    if !bin_path.exists() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            format!("Le binaire est introuvable au chemin : {:?}. As-tu fait un 'cargo build' ?", bin_path)
-        ));
+    if ds_path == "cargo" {
+        cmd.arg("run").arg("-p").arg("dedicated_server").arg("--");
     }
 
-    println!("Création d'un sous-processus pour le serveur dédié sur le port {}...", port);
+    cmd.env("DS_PORT", port.to_string()).spawn()?;
 
-    Command::new(&bin_path)
-        .env("DS_PORT", port.to_string())
-        .spawn()?;
-
-    println!("Processus serveur instancié avec succès en tâche de fond !");
     Ok(())
 }
