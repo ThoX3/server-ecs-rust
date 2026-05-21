@@ -3,6 +3,8 @@ use game_sockets::protocols::UdpBackend;
 use game_sockets::{GameNetworkEvent, GamePeer};
 use shared::{Heartbeat, JoinRequest, WelcomeMessage};
 use std::net::UdpSocket;
+use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
+use sysinfo::System;
 use std::sync::{
     atomic::{AtomicUsize, Ordering},
     Arc,
@@ -102,8 +104,8 @@ fn handle_networks(
             }
             GameNetworkEvent::Disconnected(conn) => {
                 if let Some(entity) = registry.players.remove(&conn) {
-                    commands.entity(entity).despawn(); // On détruit l'entité
-                    count.0.fetch_sub(1, Ordering::Relaxed); // On fait -1
+                    commands.entity(entity).despawn(); // Despawn the player entity.
+                    count.0.fetch_sub(1, Ordering::Relaxed); // Decrement player count.
                 }
                 println!("Deconnexion : {:?}", conn);
             }
