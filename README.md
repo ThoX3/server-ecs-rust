@@ -84,8 +84,8 @@ Voici comment s'organisent les composants de l'infrastructure.
 Ce diagramme illustre le cycle de vie complet, divisé en trois phases distinctes : la connexion initiale, la boucle de mouvement standard, et la procédure de transfert d'autorité lorsqu'un joueur franchit une frontière entre deux shards.
 
 ```text
-  CLIENT          GATEKEEPER         BROKER       SERVICE SPATIAL      SHARD 0          SHARD 1
- (Joueur)        (API REST)       (Routeur UDP)      (QuadTree)     (Autorité act.) (Futur Autorité)
+  CLIENT         GATEKEEPER          BROKER        SERVICE SPATIAL       SHARD 0           SHARD 1
+ (Joueur)        (API REST)       (Routeur UDP)      (QuadTree)      (Autorité act.)   (Futur Autorité)
     │                 │                 │                 │                 │                 │
     │─── PHASE 1 : AUTHENTIFICATION (HTTP REST) ──────────────────────────────────────────────│
     │                 │                 │                 │                 │                 │
