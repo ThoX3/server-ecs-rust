@@ -29,12 +29,12 @@ pub struct HealthResponse {
 }
 
 pub async fn health_handler() -> Json<HealthResponse> {
+    // Return a simple health status.
     Json(HealthResponse { status: "ok".to_string() })
 }
 
 fn get_zone_for_ip(ip: &str) -> String {
-    // Dummy GeoIP implementation
-    // In a real application, you would query a MaxMind GeoIP database here.
+    // Choose a zone based on IP prefix.
     if ip.starts_with("192.") || ip.starts_with("10.") || ip.starts_with("127.") {
         "zone_A".to_string()
     } else {
@@ -47,6 +47,7 @@ pub async fn login_handler(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
+    // Validate credentials and route to a server.
     if payload.username.is_empty() || payload.password.as_deref() != Some("1234") {
         return Err((
             StatusCode::UNAUTHORIZED,

@@ -12,6 +12,7 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    // Start the HTTP gateway.
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     let cfg = Config::from_url(redis_url);
     let pool = cfg.create_pool(Some(Runtime::Tokio1)).unwrap();

@@ -16,6 +16,7 @@ const BASE_DS_PORT: u16 = 7001;     // Port de départ pour attribuer aux nouvea
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Boot the orchestrator and its tasks.
     println!("Démarrage de l'orchestrateur...");
 
     let orch_port = std::env::var("ORCH_PORT")
@@ -36,14 +37,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener_redis = redis_client_shared.clone();
 
-    // Écoute des Heartbeats
+    // Listen for heartbeats.
     let heartbeat_handle = tokio::spawn(async move {
         if let Err(e) = heartbeat_listener(listener_socket, listener_redis).await {
             eprintln!("Erreur dans la tâche heartbeat_listener: {:?}", e);
         }
     });
 
-    // Surveillance et Scaling de la flotte
+    // Monitor and scale the fleet.
     let scaler_handle = tokio::spawn(async move {
         if let Err(e) = scaler_loop(redis_client_shared).await {
             eprintln!("Erreur dans la tâche scaler_loop: {:?}", e);
@@ -59,6 +60,7 @@ async fn heartbeat_listener(
     socket: Arc<UdpSocket>,
     redis_client: Arc<redis::Client>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Receive heartbeats and update Redis.
     let mut buf = [0u8; 2048];
     let mut con = redis_client.get_multiplexed_async_connection().await?;
 
@@ -88,6 +90,7 @@ async fn heartbeat_listener(
 }
 
 async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std::error::Error>> {
+    // Periodically ensure the fleet size.
     let mut interval = interval(Duration::from_secs(SCALER_INTERVAL));
     let mut next_port_to_use = BASE_DS_PORT;
 
@@ -118,6 +121,7 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
 }
 
 async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usize, redis::RedisError> {
+    // Count available servers in Redis.
     let mut con = redis_client.get_multiplexed_async_connection().await?;
     let mut available_count = 0;
 

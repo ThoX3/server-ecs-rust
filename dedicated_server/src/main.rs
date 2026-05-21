@@ -3,8 +3,10 @@ use game_sockets::protocols::UdpBackend;
 use game_sockets::{GameNetworkEvent, GamePeer};
 use shared::{Heartbeat, JoinRequest, WelcomeMessage};
 use std::net::UdpSocket;
-use std::sync::{Arc, atomic::{AtomicUsize, Ordering}};
-use sysinfo::System;
+use std::sync::{
+    atomic::{AtomicUsize, Ordering},
+    Arc,
+};
 use tokio::time::{interval, Duration};
 use uuid::Uuid;
 
@@ -20,6 +22,7 @@ pub struct Player {
 pub struct PlayerCount(pub Arc<AtomicUsize>);
 
 pub fn main() {
+    // Start the dedicated server.
     let config = ServerConfig::from_env();
 
     let peer = GamePeer::new(UdpBackend::new());
@@ -53,6 +56,7 @@ fn handle_networks(
     mut registry: ResMut<PlayerRegistry>,
     count: Res<PlayerCount>,
 ) {
+    // Handle incoming network events.
     while let Ok(Some(event)) = network.0.poll() {
         match event {
             GameNetworkEvent::Connected(conn) => {
@@ -66,10 +70,14 @@ fn handle_networks(
                 if let Ok(req) = serde_json::from_slice::<JoinRequest>(&data) {
                     if !registry.players.contains_key(&connection) {
                         let player_id = Uuid::new_v4().to_string();
-                        let entity = commands.spawn((
-                            Player { id: player_id.clone() },
-                            Transform::default(),
-                        )).id();
+                        let entity = commands
+                            .spawn((
+                                Player {
+                                    id: player_id.clone(),
+                                },
+                                Transform::default(),
+                            ))
+                            .id();
                         registry.players.insert(connection, entity);
 
                         count.0.fetch_add(1, Ordering::Relaxed);
@@ -97,7 +105,7 @@ fn handle_networks(
                     commands.entity(entity).despawn(); // On détruit l'entité
                     count.0.fetch_sub(1, Ordering::Relaxed); // On fait -1
                 }
-                println!("Disconnected: {:?}", conn);
+                println!("Deconnexion : {:?}", conn);
             }
             _ => {}
         }
@@ -105,6 +113,7 @@ fn handle_networks(
 }
 
 async fn heartbeat_task(config: ServerConfig, current_players: Arc<AtomicUsize>) {
+    // Send periodic heartbeats to the orchestrator.
     let socket = UdpSocket::bind("0.0.0.0:0").unwrap();
     let mut ticker = interval(Duration::from_secs(5));
 
@@ -126,7 +135,7 @@ async fn heartbeat_task(config: ServerConfig, current_players: Arc<AtomicUsize>)
             zone: config.zone.clone(),
             player_count: players,
             max_players: config.max_players,
-            status, // (N'oublie pas de l'ajouter dans shared/src/lib.rs)
+            status,
         };
 
         if let Ok(bytes) = serde_json::to_vec(&hb) {
