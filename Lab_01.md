@@ -233,7 +233,8 @@ cargo run -p gatekeeper
 curl -X POST http://localhost:3000/login -H "Content-Type: application/json" -d "{\"username\": \"alice\", \"password\": \"1234\"}"
 Invoke-RestMethod -Uri "http://localhost:3000/login" -Method Post -Headers @{"Content-Type" = "application/json"} -Body '{"username": "alice", "password": "1234"}'
 
-redis-cli KEYS "server:*"
+docker exec -it redis-mmorpg redis-cli KEYS "server:*"
+docker exec -it redis-mmorpg redis-cli HGETALL server:<uuid-retourné>
 redis-cli HGETALL server:<uuid-retourné>
 ```
 

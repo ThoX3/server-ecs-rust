@@ -103,19 +103,6 @@ Ce diagramme illustre le flux exact des messages binaires lorsqu'un joueur trave
 
 ---
 
-## 4. Protocole de Messages Binaires (Little-Endian)
-
-Pour référence lors du codage de votre couche réseau dans le module `shared` :
-
-| Tag (u8) | Émetteur / Récepteur | Message | Format des données |
-| :--- | :--- | :--- | :--- |
-| **`0x01`** | Service Spatial → Broker | `Subscribe` | `client_id: u32`, `topic: [u8; 32]` |
-| **`0x02`** | Service Spatial → Broker | `Unsubscribe` | `client_id: u32`, `topic: [u8; 32]` |
-| **`0x03`** | Shard → Broker | `Publish` | `topic: [u8; 32]`, `payload_len: u16`, `payload: [u8]` |
-| **`0x04`** | Broker → Client | `Broadcast` | `payload_len: u16`, `payload: [u8]` |
-| **`0x05`** | Client → Broker | `ClientInput` | `client_id: u32`, `input: [u8; 16]` |
----
-
 ## Instructions de Lancement
 
 ### Démarrer l'infrastructure complète
