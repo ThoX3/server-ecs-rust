@@ -23,37 +23,6 @@ lang: fr
 
 Le broker est le **seul point de contact** des clients. Ils ne connaissent pas l'existence des shards. Les shards publient l'état du monde sur le broker ; le service spatial décide quels clients reçoivent quoi en gérant leurs abonnements. Les shards publient sur des topics correspondant à leur identifiant (ex. `shard:0`, `shard:1`). Le service spatial abonne chaque client au topic du shard qui couvre sa position actuelle.
 
- CLIENT              BROKER           SERVICE SPATIAL         SHARD 0             SHARD 1
-(Joueur)          (Routeur UDP)         (QuadTree)        (Autorité actuelle)  (Futur Autorité)
-    │                    │                   │                   │                   │
-    │ 1. Mouvement (Input)                   │                   │                   │
-    ├───────────────────►│                   │                   │                   │
-    │                    │ 2. Route l'Input vers l'Autorité      │                   │
-    │                    ├──────────────────────────────────────►│                   │
-    │                    │                   │                   │ 3. Calcule la physique
-    │                    │                   │                   │ (Le joueur franchit 
-    │                    │                   │                   │  la ligne médiane)
-    │                    │ 4. Publish (Nouvelle Position)        │                   │
-    │                    │◄──────────────────────────────────────┤                   │
-    │ 5. Broadcast (Vue) │ 6. PositionUpdate  │                  │                   │
-    │◄───────────────────┼──────────────────►│                  │                   │
-    │                    │                    │ 7. Vérifie le QuadTree
-    │                    │                    │ (Détecte le changement de feuille)
-    │                    │                    │                  │                   │
-    │                    │ 8. CrossingAlert   │                  │                   │
-    │                    │◄──────────────────┤                   │                   │
-    │                    │                    │                  │                   │
-    │                    │ 9. Relay HandoffRequest               │                   │
-    │                    ├───────────────────────────────────────┼──────────────────►│
-    │                    │                   │                   │                   │ 10. Passe de GHOST
-    │                    │                   │                   │                   │     à OWNED
-    │                    │ 11. HandoffAccept │                   │                   │
-    │                    │◄──────────────────────────────────────┼───────────────────┤
-    │                    │ 12. Relay Accept  │                   │                   │
-    │                    ├──────────────────────────────────────►│                   │
-    │                    │                   │                   │ 13. Passe de OWNED
-    │                    │                   │                   │     à GHOST
-
 ---
 
 ## 2. Partie 1 — Broker PubSub (25 points)
