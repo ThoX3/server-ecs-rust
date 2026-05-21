@@ -74,7 +74,7 @@ Voici comment s'organisent les composants de l'infrastructure.
     ┌────▼──────┐         ┌────▼──────┐                             │
     │  SHARD 0  │         │  SHARD 1  │◄────────────────────────────┘
     │ (Zone A)  │◄───────►│ (Zone B)  │
-    │ Autorité  │ Handoff │ Ghost     │
+    │ Autorité  │ Handoff │F. Autorité│
     └───────────┘ Request └───────────┘
 
 ---
@@ -85,7 +85,7 @@ Ce diagramme illustre le cycle de vie complet, divisé en trois phases distincte
 
 ```text
   CLIENT         GATEKEEPER          BROKER        SERVICE SPATIAL       SHARD 0           SHARD 1
- (Joueur)        (API REST)       (Routeur UDP)      (QuadTree)      (Autorité act.)   (Futur Autorité)
+ (Joueur)        (API REST)       (Routeur UDP)      (QuadTree)      (Autorité act.)  (Future Autorité)
     │                 │                 │                 │                 │                 │
     │─── PHASE 1 : AUTHENTIFICATION (HTTP REST) ──────────────────────────────────────────────│
     │                 │                 │                 │                 │                 │
