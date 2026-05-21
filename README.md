@@ -1,6 +1,6 @@
-# MMORPG Server Architecture - Lab 01
+# MMORPG Server Architecture
 
-Ce projet implémente une architecture de serveurs de jeu simplifiée pour un MMORPG, répartie en quatre composants distincts qui communiquent entre eux.
+Ce projet déploie une architecture de serveurs avancée pour un monde continu (MMO), divisée en six composants distincts intégrant un routage PubSub, un partitionnement par QuadTree et un mécanisme d'autorité flexible.
 
 ## Architecture du Projet
 
@@ -8,7 +8,7 @@ Ce projet implémente une architecture de serveurs de jeu simplifiée pour un MM
 * **Rôle :** Bibliothèque centrale de types et structures de données communes.
 
 ### `dedicated_server` (Le Shard)
-* **Rôle :** Serveur de jeu minimaliste propulsé par Bevy 0.18.
+* **Rôle :** Serveur de jeu minimaliste propulsé par Bevy 0.18.1.
 
 ### `orchestrator`
 * **Rôle :** Gestionnaire asynchrone de la flotte (Tokio).
@@ -31,7 +31,7 @@ Ce projet implémente une architecture de serveurs de jeu simplifiée pour un MM
 
 ## 1. Diagramme d'Architecture Globale
 
-Voici comment s'organisent les composants de l'infrastructure. Contrairement au TP1, le client n'a plus de contact direct avec les serveurs dédiés (*Shards*), tout passe par le **Broker PubSub**.
+Voici comment s'organisent les composants de l'infrastructure. 
 
     ┌────────────────────────────────────────────────────────┐
     │                      CLIENT (fictif)                   │
