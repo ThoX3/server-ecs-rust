@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+pub mod quadtree;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Heartbeat {
     pub id: String,

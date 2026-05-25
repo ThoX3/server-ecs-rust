@@ -1,9 +1,8 @@
 use redis::AsyncCommands;
 use shared::Heartbeat;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::env;
 use std::io;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::{interval, Duration};
 
@@ -29,7 +28,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
     let redis_client_raw = redis::Client::open(redis_url)?;
     let redis_client_shared = Arc::new(redis_client_raw);
-    // -----------------------------------------------
 
     let listener_socket = socket.clone();
 
