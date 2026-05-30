@@ -74,9 +74,41 @@ fn handle_unsubscribe(state: &mut BrokerState, data: &[u8]) {
 }
 
 fn handle_publish(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src: SocketAddr) {
-    // TODO
+    let topic: [u8; 32] = data[0..32].try_into().unwrap();
+    let game_data = &data[32..];
+
+    let mut broadcast_msg = Vec::new();
+    broadcast_msg.push(0x04);
+    broadcast_msg.extend_from_slice(&topic);
+    broadcast_msg.extend_from_slice(game_data);
+
+    // Envoi à tous les abonnés du shard
+    if let Some(subscribers) = state.topic_subscribers.get(&topic) {
+        for client_id in subscribers {
+            if let Some(client_addr) = state.client_addresses.get(client_id) {
+                let _ = socket.send_to(&broadcast_msg, client_addr);
+            }
+        }
+    }
 }
 
 fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src: SocketAddr) {
-    // TODO
+    if data.len() < 4 { return; }
+
+    let client_id_bytes = data[0..4].try_into().unwrap();
+    let client_id = u32::from_le_bytes(client_id_bytes);
+    let input_payload = &data[4..];
+
+    state.client_addresses.insert(client_id, src);
+
+    if let Some(topic) = state.client_topics.get(&client_id) {
+        if let Some(shard_addr) = state.shard_addresses.get(topic) {
+            let mut shard_msg = Vec::with_capacity(1 + 4 + input_payload.len());
+            shard_msg.push(0x05);
+            shard_msg.extend_from_slice(&client_id_bytes);
+            shard_msg.extend_from_slice(input_payload);
+
+            let _ = socket.send_to(&shard_msg, shard_addr);
+        }
+    }
 }
