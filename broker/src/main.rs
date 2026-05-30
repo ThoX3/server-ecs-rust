@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::net::{UdpSocket, SocketAddr};
+use std::net::{SocketAddr, UdpSocket};
 
 type Topic = [u8; 32];
 type ClientId = u32;
@@ -37,7 +37,9 @@ fn main() -> std::io::Result<()> {
     loop {
         let (amt, src) = socket.recv_from(&mut buf)?;
 
-        if amt < 1 { continue; }
+        if amt < 1 {
+            continue;
+        }
 
         let tag = buf[0];
         let payload = &buf[1..amt];
@@ -53,7 +55,6 @@ fn main() -> std::io::Result<()> {
     }
 }
 
-
 fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
     let client_id_bytes = data[0..4].try_into().unwrap();
     let client_id = u32::from_le_bytes(client_id_bytes);
@@ -61,7 +62,8 @@ fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
     let topic = data[4..36].try_into().unwrap();
 
     state.client_topics.insert(client_id, topic);
-    state.topic_subscribers
+    state
+        .topic_subscribers
         .entry(topic)
         .or_insert_with(std::collections::HashSet::new)
         .insert(client_id);
@@ -83,6 +85,20 @@ fn handle_publish(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src:
     let topic: [u8; 32] = data[0..32].try_into().unwrap();
     let game_data = &data[32..];
 
+    // Securité
+    if let Some(official_shard_addr) = state.shard_addresses.get(&topic) {
+        if src != *official_shard_addr {
+            eprintln!(
+                "Refus de publication : l'adresse {} n'est pas le Shard officiel pour ce topic.",
+                src
+            );
+            return;
+        }
+    } else {
+        eprintln!("Refus de publication : aucun Shard enregistré pour ce topic.");
+        return;
+    }
+
     let mut broadcast_msg = Vec::new();
     broadcast_msg.push(0x04);
     broadcast_msg.extend_from_slice(&topic);
@@ -99,7 +115,9 @@ fn handle_publish(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src:
 }
 
 fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src: SocketAddr) {
-    if data.len() < 4 { return; }
+    if data.len() < 4 {
+        return;
+    }
 
     let client_id_bytes = data[0..4].try_into().unwrap();
     let client_id = u32::from_le_bytes(client_id_bytes);
@@ -120,7 +138,9 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
 }
 
 fn handle_register_shard(state: &mut BrokerState, data: &[u8], src: SocketAddr) {
-    if data.len() < 32 { return; }
+    if data.len() < 32 {
+        return;
+    }
     let topic: [u8; 32] = data[0..32].try_into().unwrap();
     state.shard_addresses.insert(topic, src);
 }
