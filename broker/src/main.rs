@@ -30,7 +30,7 @@ fn main() -> std::io::Result<()> {
     // TODO : INITIALISATION DES PREMIERS SHARDS
     // let mut shard0_topic = [0u8; 32];
     // shard0_topic[0..7].copy_from_slice(b"shard:0");
-    // state.shard_addresses.insert(shard0_topic, "127.0.0.1:9001".parse().unwrap());
+    // state.shard_addresses.insert(shard0_topic, "127.0.0.1:8001".parse().unwrap());
 
     println!("Broker PubSub démarré sur le port 9000...");
 
@@ -121,14 +121,6 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
 
 fn handle_register_shard(state: &mut BrokerState, data: &[u8], src: SocketAddr) {
     if data.len() < 32 { return; }
-
     let topic: [u8; 32] = data[0..32].try_into().unwrap();
-
     state.shard_addresses.insert(topic, src);
-
-    if let Ok(topic_str) = std::str::from_bytes_with_nul(&topic) {
-        println!("Shard enregistré dynamiquement : {} -> {}", topic_str.trim_end_matches('\0'), src);
-    } else {
-        println!("Shard enregistré dynamiquement (binaire) -> {}", src);
-    }
 }
