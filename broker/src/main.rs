@@ -27,6 +27,11 @@ fn main() -> std::io::Result<()> {
     let mut state = BrokerState::new();
     let mut buf = [0u8; 65535];
 
+    // TODO : INITIALISATION DES PREMIERS SHARDS
+    // let mut shard0_topic = [0u8; 32];
+    // shard0_topic[0..7].copy_from_slice(b"shard:0");
+    // state.shard_addresses.insert(shard0_topic, "127.0.0.1:9001".parse().unwrap());
+
     println!("Broker PubSub démarré sur le port 9000...");
 
     loop {
@@ -42,6 +47,7 @@ fn main() -> std::io::Result<()> {
             0x02 => handle_unsubscribe(&mut state, payload),
             0x03 => handle_publish(&mut state, &socket, payload, src),
             0x05 => handle_client_input(&mut state, &socket, payload, src),
+            0x06 => handle_register_shard(&mut state, payload, src),
             _ => eprintln!("Tag inconnu: 0x{:02X}", tag),
         }
     }
@@ -110,5 +116,19 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
 
             let _ = socket.send_to(&shard_msg, shard_addr);
         }
+    }
+}
+
+fn handle_register_shard(state: &mut BrokerState, data: &[u8], src: SocketAddr) {
+    if data.len() < 32 { return; }
+
+    let topic: [u8; 32] = data[0..32].try_into().unwrap();
+
+    state.shard_addresses.insert(topic, src);
+
+    if let Ok(topic_str) = std::str::from_bytes_with_nul(&topic) {
+        println!("Shard enregistré dynamiquement : {} -> {}", topic_str.trim_end_matches('\0'), src);
+    } else {
+        println!("Shard enregistré dynamiquement (binaire) -> {}", src);
     }
 }
