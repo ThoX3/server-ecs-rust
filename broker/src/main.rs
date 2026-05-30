@@ -49,11 +49,28 @@ fn main() -> std::io::Result<()> {
 
 
 fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
-    // TODO
+    let client_id_bytes = data[0..4].try_into().unwrap();
+    let client_id = u32::from_le_bytes(client_id_bytes);
+
+    let topic = data[4..36].try_into().unwrap();
+
+    state.client_topics.insert(client_id, topic);
+    state.topic_subscribers
+        .entry(topic)
+        .or_insert_with(std::collections::HashSet::new)
+        .insert(client_id);
 }
 
 fn handle_unsubscribe(state: &mut BrokerState, data: &[u8]) {
-    // TODO
+    let client_id_bytes = data[0..4].try_into().unwrap();
+    let client_id = u32::from_le_bytes(client_id_bytes);
+
+    let topic = data[4..36].try_into().unwrap();
+
+    state.client_topics.remove(&client_id);
+    if let Some(subscribers) = state.topic_subscribers.get_mut(&topic) {
+        subscribers.remove(&client_id);
+    }
 }
 
 fn handle_publish(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src: SocketAddr) {
