@@ -61,7 +61,7 @@ Voici comment s'organisent les composants de l'infrastructure.
                               └───────────▲───────────┘
                                           │ heartbeat
         ┌─────────────────────────────────┴─────────────────────────────────┐
-        │                                                                   │
+        │ register_shard                                                    │
     ┌───▼───────────────────────────┐                   ┌───────────────────▼──┐
     │     BROKER (PubSub Router)    │◄── Abonnement ───►│    SERVICE SPATIAL   │
     │ - Seul point d'accès UDP      │   (Sub/Unsub)     │ - Maintient QuadTree │

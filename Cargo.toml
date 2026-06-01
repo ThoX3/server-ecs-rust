@@ -1,9 +1,14 @@
 [workspace]
+resolver = "2"
 members = [
     "shared",
     "dedicated_server",
     "orchestrator",
     "gatekeeper",
     "game_sockets",
+    "broker",
 ]
-resolver = "2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
