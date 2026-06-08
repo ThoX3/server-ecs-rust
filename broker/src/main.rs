@@ -1,23 +1,26 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 
-type Topic = [u8; 32];
+type Topic = u8;
 type ClientId = u32;
+
+struct TopicRoute {
+    authority_shard: SocketAddr,
+    client_id: Option<ClientId>,
+}
 
 struct BrokerState {
     client_addresses: HashMap<ClientId, SocketAddr>,
-    client_topics: HashMap<ClientId, Topic>,
-    topic_subscribers: HashMap<Topic, HashSet<ClientId>>,
-    shard_addresses: HashMap<Topic, SocketAddr>,
+    client_to_topic: HashMap<ClientId, Topic>,
+    routes: HashMap<Topic, TopicRoute>,
 }
 
 impl BrokerState {
     fn new() -> Self {
         Self {
             client_addresses: HashMap::new(),
-            client_topics: HashMap::new(),
-            topic_subscribers: HashMap::new(),
-            shard_addresses: HashMap::new(),
+            client_to_topic: HashMap::new(),
+            routes: HashMap::new(),
         }
     }
 }
@@ -25,14 +28,14 @@ impl BrokerState {
 fn main() -> std::io::Result<()> {
     let socket = UdpSocket::bind("0.0.0.0:9000")?;
     let mut state = BrokerState::new();
-    let mut buf = [0u8; 65535];
+    let mut buf = [0u8; 2048];
 
     // TODO : INITIALISATION DES PREMIERS SHARDS
     // let mut shard0_topic = [0u8; 32];
     // shard0_topic[0..7].copy_from_slice(b"shard:0");
     // state.shard_addresses.insert(shard0_topic, "127.0.0.1:8001".parse().unwrap());
 
-    println!("Broker PubSub démarré sur le port 9000...");
+    println!("Broker PubSubs démarré sur le port 9000...");
 
     loop {
         let (amt, src) = socket.recv_from(&mut buf)?;
@@ -56,59 +59,61 @@ fn main() -> std::io::Result<()> {
 }
 
 fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
-    let client_id_bytes = data[0..4].try_into().unwrap();
-    let client_id = u32::from_le_bytes(client_id_bytes);
+    if data.len() < 5 {
+        return;
+    }
+    let client_id = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let topic: Topic = data[4];
 
-    let topic = data[4..36].try_into().unwrap();
+    state.client_to_topic.insert(client_id, topic);
 
-    state.client_topics.insert(client_id, topic);
-    state
-        .topic_subscribers
-        .entry(topic)
-        .or_insert_with(std::collections::HashSet::new)
-        .insert(client_id);
+    if let Some(route) = state.routes.get_mut(&topic) {
+        route.client_id = Some(client_id);
+    }
 }
 
 fn handle_unsubscribe(state: &mut BrokerState, data: &[u8]) {
-    let client_id_bytes = data[0..4].try_into().unwrap();
-    let client_id = u32::from_le_bytes(client_id_bytes);
+    if data.len() < 5 {
+        return;
+    }
+    let client_id = u32::from_le_bytes(data[0..4].try_into().unwrap());
+    let topic: Topic = data[4];
 
-    let topic = data[4..36].try_into().unwrap();
-
-    state.client_topics.remove(&client_id);
-    if let Some(subscribers) = state.topic_subscribers.get_mut(&topic) {
-        subscribers.remove(&client_id);
+    state.client_to_topic.remove(&client_id);
+    if let Some(route) = state.routes.get_mut(&topic) {
+        if route.client_id == Some(client_id) {
+            route.client_id = None;
+        }
     }
 }
 
 fn handle_publish(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src: SocketAddr) {
-    let topic: [u8; 32] = data[0..32].try_into().unwrap();
-    let game_data = &data[32..];
-
-    // Securité
-    if let Some(official_shard_addr) = state.shard_addresses.get(&topic) {
-        if src != *official_shard_addr {
-            eprintln!(
-                "Refus de publication : l'adresse {} n'est pas le Shard officiel pour ce topic.",
-                src
-            );
-            return;
-        }
-    } else {
-        eprintln!("Refus de publication : aucun Shard enregistré pour ce topic.");
+    if data.len() < 3 {
         return;
     }
+    let topic: Topic = data[0];
+    let payload_len = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
 
-    let mut broadcast_msg = Vec::new();
-    broadcast_msg.push(0x04);
-    broadcast_msg.extend_from_slice(&topic);
-    broadcast_msg.extend_from_slice(game_data);
+    if data.len() < 3 + payload_len {
+        return;
+    }
+    let game_data = &data[3..3 + payload_len];
 
-    // Envoi à tous les abonnés du shard
-    if let Some(subscribers) = state.topic_subscribers.get(&topic) {
-        for client_id in subscribers {
-            if let Some(client_addr) = state.client_addresses.get(client_id) {
-                let _ = socket.send_to(&broadcast_msg, client_addr);
+    if let Some(route) = state.routes.get(&topic) {
+        if src != route.authority_shard {
+            return;
+        }
+
+        if let Some(client_id) = route.client_id {
+            if let Some(client_addr) = state.client_addresses.get(&client_id) {
+                let mut broadcast_msg = [0u8; 1500];
+                broadcast_msg[0] = 0x04;
+                broadcast_msg[1..3].copy_from_slice(&(payload_len as u16).to_le_bytes());
+                let total_len = 3 + game_data.len();
+                if total_len <= 1500 {
+                    broadcast_msg[3..total_len].copy_from_slice(game_data);
+                    let _ = socket.send_to(&broadcast_msg[..total_len], client_addr);
+                }
             }
         }
     }
@@ -125,22 +130,34 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
 
     state.client_addresses.insert(client_id, src);
 
-    if let Some(topic) = state.client_topics.get(&client_id) {
-        if let Some(shard_addr) = state.shard_addresses.get(topic) {
-            let mut shard_msg = Vec::with_capacity(1 + 4 + input_payload.len());
-            shard_msg.push(0x05);
-            shard_msg.extend_from_slice(&client_id_bytes);
-            shard_msg.extend_from_slice(input_payload);
-
-            let _ = socket.send_to(&shard_msg, shard_addr);
+    if let Some(topic) = state.client_to_topic.get(&client_id) {
+        if let Some(route) = state.routes.get(topic) {
+            let mut shard_msg = [0u8; 512];
+            shard_msg[0..4].copy_from_slice(&client_id_bytes);
+            let total_len = 4 + input_payload.len();
+            if total_len <= 512 {
+                shard_msg[4..total_len].copy_from_slice(input_payload);
+                let _ = socket.send_to(&shard_msg[..total_len], route.authority_shard);
+            }
         }
     }
 }
 
 fn handle_register_shard(state: &mut BrokerState, data: &[u8], src: SocketAddr) {
-    if data.len() < 32 {
+    if data.len() < 1 {
         return;
     }
-    let topic: [u8; 32] = data[0..32].try_into().unwrap();
-    state.shard_addresses.insert(topic, src);
+    let topic: Topic = data[0];
+
+    if let Some(route) = state.routes.get_mut(&topic) {
+        route.authority_shard = src;
+    } else {
+        state.routes.insert(
+            topic,
+            TopicRoute {
+                authority_shard: src,
+                client_id: None,
+            },
+        );
+    }
 }

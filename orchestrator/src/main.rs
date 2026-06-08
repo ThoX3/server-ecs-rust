@@ -6,10 +6,10 @@ use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::{interval, Duration};
 
-const TTL_SECONDS: u64 = 15;        // Temps avant qu'un serveur soit considéré comme mort
-const SCALER_INTERVAL: u64 = 5;     // Fréquence de vérification de la flotte (en secondes)
-const HOT_SERVERS_MIN: usize = 2;   // Nombre minimal de serveurs vides requis
-const BASE_DS_PORT: u16 = 7001;     // Port de départ pour attribuer aux nouveaux serveurs
+const TTL_SECONDS: u64 = 15; // Temps avant qu'un serveur soit considéré comme mort
+const SCALER_INTERVAL: u64 = 5; // Fréquence de vérification de la flotte (en secondes)
+const HOT_SERVERS_MIN: usize = 2; // Nombre minimal de serveurs vides requis
+const BASE_DS_PORT: u16 = 7001; // Port de départ pour attribuer aux nouveaux serveurs
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -66,7 +66,11 @@ async fn heartbeat_listener(
         if let Ok(hb) = serde_json::from_slice::<Heartbeat>(&buf[..len]) {
             let redis_key = format!("server:{}", hb.id);
 
-            let status = if hb.player_count >= hb.max_players { "full" } else { "available" };
+            let status = if hb.player_count >= hb.max_players {
+                "full"
+            } else {
+                "available"
+            };
 
             let _: () = redis::pipe()
                 .atomic()
@@ -80,7 +84,10 @@ async fn heartbeat_listener(
                 .query_async(&mut con)
                 .await?;
 
-            println!("Heartbeat traité pour le serveur {} (Statut: {})", hb.id, status);
+            println!(
+                "Heartbeat traité pour le serveur {} (Statut: {})",
+                hb.id, status
+            );
         }
     }
 }
@@ -95,18 +102,27 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
 
         match count_available_servers(redis_client.clone()).await {
             Ok(available_count) => {
-                println!("Flotte actuelle : {} serveurs disponibles (Requis minimum : {})", available_count, HOT_SERVERS_MIN);
+                println!(
+                    "Flotte actuelle : {} serveurs disponibles (Requis minimum : {})",
+                    available_count, HOT_SERVERS_MIN
+                );
 
                 if available_count < HOT_SERVERS_MIN {
                     let needed = HOT_SERVERS_MIN - available_count;
-                    println!("Alerte sous-effectif ! Lancement de {} serveur(s) dédié(s)...", needed);
+                    println!(
+                        "Alerte sous-effectif ! Lancement de {} serveur(s) dédié(s)...",
+                        needed
+                    );
 
                     for _ in 0..needed {
                         let port = next_port_to_use;
                         next_port_to_use += 1;
 
                         if let Err(e) = spawn_server(port) {
-                            eprintln!("Impossible de spawner le serveur sur le port {}: {:?}", port, e);
+                            eprintln!(
+                                "Impossible de spawner le serveur sur le port {}: {:?}",
+                                port, e
+                            );
                         }
                     }
                 }
@@ -116,13 +132,19 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
     }
 }
 
-async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usize, redis::RedisError> {
+async fn count_available_servers(
+    redis_client: Arc<redis::Client>,
+) -> Result<usize, redis::RedisError> {
     // Count available servers in Redis.
     let mut con = redis_client.get_multiplexed_async_connection().await?;
     let mut available_count = 0;
 
     let mut cmd = redis::cmd("SCAN");
-    cmd.arg(0).arg("MATCH").arg("server:*").arg("COUNT").arg(100);
+    cmd.arg(0)
+        .arg("MATCH")
+        .arg("server:*")
+        .arg("COUNT")
+        .arg(100);
 
     let (mut cursor, keys): (u64, Vec<String>) = cmd.query_async(&mut con).await?;
 
@@ -137,7 +159,12 @@ async fn count_available_servers(redis_client: Arc<redis::Client>) -> Result<usi
 
     while cursor != 0 {
         let mut next_cmd = redis::cmd("SCAN");
-        next_cmd.arg(cursor).arg("MATCH").arg("server:*").arg("COUNT").arg(100);
+        next_cmd
+            .arg(cursor)
+            .arg("MATCH")
+            .arg("server:*")
+            .arg("COUNT")
+            .arg(100);
         let (next_cursor, next_keys): (u64, Vec<String>) = next_cmd.query_async(&mut con).await?;
         cursor = next_cursor;
 
