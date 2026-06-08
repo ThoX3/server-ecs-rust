@@ -38,5 +38,25 @@ services:
     depends_on:
       - redis
 
+  broker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: broker
+    command: ["./broker"]
+    ports:
+      - "9000:9000/udp"
+
+  spatial_server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: spatial_server
+    command: ["./spatial_server"]
+    ports:
+      - "9001:9001/udp"
+    environment:
+      - BROKER_ADDR=broker:9000
+
 volumes:
   redis_data:

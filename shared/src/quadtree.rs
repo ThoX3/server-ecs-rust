@@ -10,10 +10,19 @@ pub struct PositionUpdate {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SpatialAction {
-    Subscribe { client_id: u32, topic: String },
-    Unsubscribe { client_id: u32, topic: String },
+    Subscribe { client_id: u32, topic: [u8; 32] },
+    Unsubscribe { client_id: u32, topic: [u8; 32] },
     CrossingAlert { client_id: u32, shards: Vec<u32> },
 }
+
+pub fn string_to_topic(s: &str) -> [u8; 32] {
+    let mut topic = [0u8; 32];
+    let bytes = s.as_bytes();
+    let len = bytes.len().min(32);
+    topic[..len].copy_from_slice(&bytes[..len]);
+    topic
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QuadTree {
@@ -161,13 +170,13 @@ impl SpatialService {
                 if let Some(old) = current_shard {
                     actions.push(SpatialAction::Unsubscribe {
                         client_id: update.client_id,
-                        topic: format!("shard:{}", old),
+                        topic: string_to_topic(&format!("shard:{}", old)),
                     });
                 }
 
                 actions.push(SpatialAction::Subscribe {
                     client_id: update.client_id,
-                    topic: format!("shard:{}", new_shard),
+                    topic: string_to_topic(&format!("shard:{}", new_shard)),
                 });
 
                 self.client_shards.insert(update.client_id, new_shard);

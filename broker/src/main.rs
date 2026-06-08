@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::net::{SocketAddr, UdpSocket};
 
-type Topic = u8;
+type Topic = [u8; 32];
 type ClientId = u32;
 
 struct TopicRoute {
@@ -53,17 +53,35 @@ fn main() -> std::io::Result<()> {
             0x03 => handle_publish(&mut state, &socket, payload, src),
             0x05 => handle_client_input(&mut state, &socket, payload, src),
             0x06 => handle_register_shard(&mut state, payload, src),
+            0x11 => handle_crossing_alert(&mut state, &socket, payload),
             _ => eprintln!("Tag inconnu: 0x{:02X}", tag),
         }
     }
 }
 
+fn handle_crossing_alert(state: &mut BrokerState, socket: &UdpSocket, data: &[u8]) {
+    if data.len() < 4 {
+        return;
+    }
+    let client_id_bytes = data[0..4].try_into().unwrap();
+    let client_id = u32::from_le_bytes(client_id_bytes);
+
+    if let Some(topic) = state.client_to_topic.get(&client_id) {
+        if let Some(route) = state.routes.get(topic) {
+            let mut shard_msg = vec![0x11];
+            shard_msg.extend_from_slice(data);
+            let _ = socket.send_to(&shard_msg, route.authority_shard);
+        }
+    }
+}
+
 fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
-    if data.len() < 5 {
+    if data.len() < 36 {
         return;
     }
     let client_id = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let topic: Topic = data[4];
+    let mut topic = [0u8; 32];
+    topic.copy_from_slice(&data[4..36]);
 
     state.client_to_topic.insert(client_id, topic);
 
@@ -73,11 +91,12 @@ fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
 }
 
 fn handle_unsubscribe(state: &mut BrokerState, data: &[u8]) {
-    if data.len() < 5 {
+    if data.len() < 36 {
         return;
     }
     let client_id = u32::from_le_bytes(data[0..4].try_into().unwrap());
-    let topic: Topic = data[4];
+    let mut topic = [0u8; 32];
+    topic.copy_from_slice(&data[4..36]);
 
     state.client_to_topic.remove(&client_id);
     if let Some(route) = state.routes.get_mut(&topic) {
@@ -88,16 +107,17 @@ fn handle_unsubscribe(state: &mut BrokerState, data: &[u8]) {
 }
 
 fn handle_publish(state: &mut BrokerState, socket: &UdpSocket, data: &[u8], src: SocketAddr) {
-    if data.len() < 3 {
+    if data.len() < 34 {
         return;
     }
-    let topic: Topic = data[0];
-    let payload_len = u16::from_le_bytes(data[1..3].try_into().unwrap()) as usize;
+    let mut topic = [0u8; 32];
+    topic.copy_from_slice(&data[0..32]);
+    let payload_len = u16::from_le_bytes(data[32..34].try_into().unwrap()) as usize;
 
-    if data.len() < 3 + payload_len {
+    if data.len() < 34 + payload_len {
         return;
     }
-    let game_data = &data[3..3 + payload_len];
+    let game_data = &data[34..34 + payload_len];
 
     if let Some(route) = state.routes.get(&topic) {
         if src != route.authority_shard {
@@ -144,10 +164,11 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
 }
 
 fn handle_register_shard(state: &mut BrokerState, data: &[u8], src: SocketAddr) {
-    if data.len() < 1 {
+    if data.len() < 32 {
         return;
     }
-    let topic: Topic = data[0];
+    let mut topic = [0u8; 32];
+    topic.copy_from_slice(&data[0..32]);
 
     if let Some(route) = state.routes.get_mut(&topic) {
         route.authority_shard = src;
