@@ -73,7 +73,8 @@ fn handle_networks(
             } => {
                 // Cas 1 : Le joueur est déjà connecté, on traite ses inputs de gameplay
                 if let Some(&player_entity) = registry.players.get(&connection) {
-                    if let Ok(input) = serde_json::from_slice::<PlayerInput>(&data) {
+                    let input_payload = &data[4..];
+                    if let Ok(input) = serde_json::from_slice::<PlayerInput>(&input_payload) {
                         if let Ok(mut entity_commands) = commands.get_entity(player_entity) {
                             entity_commands.insert(input);
                         }
@@ -89,6 +90,10 @@ fn handle_networks(
                                     id: player_id.clone(),
                                 },
                                 Transform::default(),
+                                PlayerInput {
+                                    movement_x: 0.0,
+                                    movement_y: 0.0,
+                                },
                             ))
                             .id();
 
