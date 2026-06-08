@@ -15,7 +15,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Listening on port {}", port);
     println!("Broker address: {}", broker_addr);
 
-    // Initialisation du QuadTree (Monde de -1000 à 1000 par exemple)
+    // Initialisation du QuadTree
+    // Monde de -1000 à 1000
     let bounds = Rect::from_center_size(Vec2::ZERO, Vec2::new(2000.0, 2000.0));
     let mut quadtree = QuadTree::new(bounds, 0, 2);
     quadtree.split(); // split au moins une fois pour avoir 4 shards (0, 1, 2, 3)
