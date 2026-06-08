@@ -129,8 +129,7 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
 
     if let Some(topic) = state.client_to_topic.get(&client_id) {
         if let Some(route) = state.routes.get(topic) {
-            let mut shard_msg = Vec::with_capacity(1 + 4 + 16);
-            shard_msg.push(0x05); // Tag Client Input
+            let mut shard_msg = Vec::with_capacity(4 + input_payload.len());
             shard_msg.extend_from_slice(&client_id_bytes);
             shard_msg.extend_from_slice(input_payload);
 

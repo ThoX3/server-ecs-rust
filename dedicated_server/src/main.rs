@@ -1,11 +1,12 @@
 use bevy::prelude::*;
 use game_sockets::protocols::UdpBackend;
 use game_sockets::{GameNetworkEvent, GamePeer};
+use serde::{Deserialize, Serialize};
 use shared::{Heartbeat, JoinRequest, WelcomeMessage};
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::time::{interval, Duration};
+use tokio::time::{Duration, interval};
 use uuid::Uuid;
 
 mod resources;
@@ -14,6 +15,12 @@ use resources::{PlayerRegistry, ServerConfig, ServerNetwork};
 #[derive(Component)]
 pub struct Player {
     pub id: String,
+}
+
+#[derive(Component, Serialize, Deserialize, Clone, Debug)]
+pub struct PlayerInput {
+    pub movement_x: f32,
+    pub movement_y: f32,
 }
 
 #[derive(Resource)]
@@ -44,7 +51,7 @@ pub fn main() {
         .insert_resource(PlayerRegistry::default())
         .insert_resource(ServerNetwork(peer))
         .insert_resource(PlayerCount(player_count))
-        .add_systems(Update, handle_networks)
+        .add_systems(Update, (handle_networks, move_players))
         .run();
 }
 
@@ -54,7 +61,6 @@ fn handle_networks(
     mut registry: ResMut<PlayerRegistry>,
     count: Res<PlayerCount>,
 ) {
-    // Handle incoming network events.
     while let Ok(Some(event)) = network.0.poll() {
         match event {
             GameNetworkEvent::Connected(conn) => {
@@ -65,7 +71,16 @@ fn handle_networks(
                 stream,
                 data,
             } => {
-                if let Ok(req) = serde_json::from_slice::<JoinRequest>(&data) {
+                // Cas 1 : Le joueur est déjà connecté, on traite ses inputs de gameplay
+                if let Some(&player_entity) = registry.players.get(&connection) {
+                    if let Ok(input) = serde_json::from_slice::<PlayerInput>(&data) {
+                        if let Ok(mut entity_commands) = commands.get_entity(player_entity) {
+                            entity_commands.insert(input);
+                        }
+                    }
+                }
+                // Cas 2 : Le joueur n'est pas encore enregistré, on traite sa demande de connexion
+                else if let Ok(req) = serde_json::from_slice::<JoinRequest>(&data) {
                     if !registry.players.contains_key(&connection) {
                         let player_id = Uuid::new_v4().to_string();
                         let entity = commands
@@ -76,16 +91,9 @@ fn handle_networks(
                                 Transform::default(),
                             ))
                             .id();
+
                         registry.players.insert(connection, entity);
-
                         count.0.fetch_add(1, Ordering::Relaxed);
-
-                        commands.spawn((
-                            Player {
-                                id: player_id.clone(),
-                            },
-                            Transform::default(),
-                        ));
 
                         println!("Player {} joined", req.username);
 
@@ -139,5 +147,14 @@ async fn heartbeat_task(config: ServerConfig, current_players: Arc<AtomicUsize>)
         if let Ok(bytes) = serde_json::to_vec(&hb) {
             let _ = socket.send_to(&bytes, config.orchestrator_addr);
         }
+    }
+}
+
+fn move_players(time: Res<Time>, mut query: Query<(&PlayerInput, &mut Transform), With<Player>>) {
+    for (input, mut transform) in query.iter_mut() {
+        let speed = 5.0;
+
+        transform.translation.x += input.movement_x * speed * time.delta_secs();
+        transform.translation.y += input.movement_y * speed * time.delta_secs();
     }
 }
