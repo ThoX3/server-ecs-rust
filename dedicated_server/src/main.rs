@@ -39,26 +39,11 @@ pub enum Authority {
     Ghost { source_shard_addr: SocketAddr },
 }
 
-/// Compteur de ticks, à double usage selon le rôle de l'entité :
-/// - Côté shard SOURCE, sur une entité `PendingHandoff` : nombre de ticks écoulés
-///   depuis le début du transfert (proxy du nombre de `GhostUpdate` envoyés au
-///   shard destination). Utilisé par `check_handoff_stable_system` pour décider
-///   quand envoyer `HandoffComplete`.
-/// - Côté shard DESTINATION, sur une entité `Ghost` : nombre de `GhostUpdate`
-///   effectivement reçus depuis le shard source. Remis à zéro à `HandoffComplete`.
-///
-/// Ce composant est ajouté dès le spawn initial de TOUTE entité `Player` afin que
-/// `check_handoff_stable_system` (dont la query le requiert) capture aussi
-/// l'entité côté source pendant `PendingHandoff`.
 #[derive(Component, Default)]
 pub struct HandoffTickCount(pub u32);
 
-/// Nombre de ticks consécutifs en PendingHandoff avant de considérer le transfert
-/// terminé et d'envoyer HandoffComplete.
 pub const HANDOFF_STABILIZE_TICKS: u32 = 5;
 
-/// Émis par le service spatial quand une entité entre dans la marge d'une frontière
-/// inter-shard et doit être transférée.
 pub struct CrossingAlert {
     pub entity_id: u32,
     pub target_shard: SocketAddr,
@@ -67,8 +52,6 @@ pub struct CrossingAlert {
 #[derive(Resource, Default)]
 pub struct CrossingAlertQueue(pub Vec<CrossingAlert>);
 
-/// Émis (côté shard source) quand un ghost destination est jugé stable et que
-/// l'autorité complète doit lui être transférée.
 pub struct HandoffCompleteTrigger {
     pub entity_id: u32,
 }
@@ -112,11 +95,11 @@ pub fn main() {
             (
                 handle_networks,
                 move_players,
-                initiate_handoff_system, // Étape 1 : envoie HandoffRequest (0x20)
-                handle_inter_shard_messages, // Étapes 0x20-0x24 : accept/reject/ghost/complete
-                sync_ghosts_system,      // Étape continue : GhostUpdate (0x23)
-                check_handoff_stable_system, // Détecte un ghost stable -> remplit HandoffCompleteQueue
-                finalize_handoff_system, // Étape finale : HandoffComplete (0x24) + despawn source
+                initiate_handoff_system,
+                handle_inter_shard_messages,
+                sync_ghosts_system,
+                check_handoff_stable_system,
+                finalize_handoff_system,
             )
                 .chain(),
         )
@@ -187,8 +170,8 @@ fn handle_networks(
             }
             GameNetworkEvent::Disconnected(conn) => {
                 if let Some(entity) = registry.players.remove(&conn) {
-                    commands.entity(entity).despawn(); // Despawn the player entity.
-                    count.0.fetch_sub(1, Ordering::Relaxed); // Decrement player count.
+                    commands.entity(entity).despawn();
+                    count.0.fetch_sub(1, Ordering::Relaxed);
                 }
                 println!("Deconnexion : {:?}", conn);
             }
@@ -198,7 +181,6 @@ fn handle_networks(
 }
 
 async fn heartbeat_task(config: ServerConfig, current_players: Arc<AtomicUsize>) {
-    // Send periodic heartbeats to the orchestrator.
     let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
     let mut ticker = interval(Duration::from_secs(5));
 
@@ -232,9 +214,6 @@ fn move_players(
     mut query: Query<(&PlayerInput, &mut Transform, &Authority), With<Player>>,
 ) {
     for (input, mut transform, authority) in query.iter_mut() {
-        // Un Ghost ne simule pas localement : sa position vient des GhostUpdate du voisin.
-        // Owned et PendingHandoff continuent d'être simulés normalement par ce shard
-        // jusqu'à ce que l'autorité soit effectivement transférée (HandoffComplete).
         if !matches!(authority, Authority::Ghost { .. }) {
             let speed = 5.0;
             transform.translation.x += input.movement_x * speed * time.delta_secs();
@@ -243,10 +222,6 @@ fn move_players(
     }
 }
 
-/// Étape 1 : le service spatial a détecté une entité approchant d'une frontière
-/// (`CrossingAlert`). On envoie un `HandoffRequest` (0x20) au shard voisin et on
-/// passe l'entité en `PendingHandoff`. Elle continue d'être simulée normalement
-/// par ce shard jusqu'à `HandoffComplete`.
 pub fn initiate_handoff_system(
     mut queue: ResMut<CrossingAlertQueue>,
     mut query: Query<(&mut Authority, &Transform, &PlayerInput, &NetworkId)>,
@@ -261,9 +236,6 @@ pub fn initiate_handoff_system(
                     target_shard_addr: alert.target_shard,
                 };
 
-                // Tag 0x20 : HandoffRequest
-                // entity_id: u32 (4) | pos: Vec2 (8) | vel: Vec2 (8) | state: [u8; 64]
-                // = 1 + 4 + 8 + 8 + 64 = 85 octets
                 let mut buf = [0u8; 85];
                 buf[0] = 0x20;
                 buf[1..5].copy_from_slice(&net_id.0.to_le_bytes());
@@ -271,7 +243,6 @@ pub fn initiate_handoff_system(
                 buf[9..13].copy_from_slice(&transform.translation.y.to_le_bytes());
                 buf[13..17].copy_from_slice(&input.movement_x.to_le_bytes());
                 buf[17..21].copy_from_slice(&input.movement_y.to_le_bytes());
-                // buf[21..85] = state, laissé à 0 (non utilisé pour ce TP)
 
                 let _ = socket.0.send_to(&buf, alert.target_shard);
             }
@@ -279,9 +250,6 @@ pub fn initiate_handoff_system(
     }
 }
 
-/// Étape continue : tant qu'une entité est `PendingHandoff` côté shard source,
-/// on publie son état au shard destination via `GhostUpdate` (0x23) à chaque tick,
-/// pour que sa copie `Ghost` reste synchronisée.
 pub fn sync_ghosts_system(
     query: Query<(&Authority, &Transform, &PlayerInput, &NetworkId)>,
     socket: Res<InterShardSocket>,
@@ -327,9 +295,7 @@ pub fn handle_inter_shard_messages(
 
         match tag {
             0x20 => {
-                // HandoffRequest reçu : ce shard devient la destination potentielle.
-                // On décide accept/reject (ici : toujours accepter, sauf si l'entité
-                // existe déjà localement sous une autre forme).
+                // HandoffRequest reçu
                 if amt >= 85 {
                     let pos_x = f32::from_le_bytes(buf[5..9].try_into().unwrap());
                     let pos_y = f32::from_le_bytes(buf[9..13].try_into().unwrap());
@@ -347,8 +313,6 @@ pub fn handle_inter_shard_messages(
                         reject_buf[1..5].copy_from_slice(&entity_id.to_le_bytes());
                         let _ = socket.0.send_to(&reject_buf, src);
                     } else {
-                        // Spawn de l'entité en état Ghost : copie lecture seule,
-                        // simulée par le shard source (`src`) jusqu'à HandoffComplete.
                         commands.spawn((
                             Player {
                                 id: entity_id.to_string(),
@@ -377,9 +341,7 @@ pub fn handle_inter_shard_messages(
             }
             0x21 => {
                 // HandoffAccept reçu côté source : le shard destination a bien
-                // spawn le Ghost. L'entité reste PendingHandoff ; on continue
-                // d'envoyer des GhostUpdate jusqu'à ce qu'elle soit jugée stable
-                // (voir check_handoff_stable_system), puis HandoffComplete.
+                // spawn le Ghost.
                 println!("HandoffAccept reçu pour {}", entity_id);
             }
             0x22 => {
@@ -437,18 +399,6 @@ pub fn handle_inter_shard_messages(
     }
 }
 
-/// Détecte, côté shard SOURCE, qu'une entité `PendingHandoff` a été transférée
-/// depuis assez de ticks pour être considérée stable côté destination, et
-/// programme l'envoi de `HandoffComplete` via `HandoffCompleteQueue`.
-///
-/// `HandoffTickCount` est ajouté dès le spawn initial de toute entité `Player`
-/// (voir `handle_networks`), ce qui garantit que cette query capture bien
-/// l'entité source pendant sa phase `PendingHandoff` — contrairement à une
-/// version où ce composant n'existerait que sur les `Ghost` (côté destination),
-/// qui exclurait systématiquement l'entité source de cette query.
-///
-/// Le nombre de ticks écoulés en `PendingHandoff` sert de proxy simple au nombre
-/// de `GhostUpdate` envoyés au shard destination.
 pub fn check_handoff_stable_system(
     mut complete_queue: ResMut<HandoffCompleteQueue>,
     mut query: Query<(&mut Authority, &NetworkId, &mut HandoffTickCount)>,
@@ -465,8 +415,6 @@ pub fn check_handoff_stable_system(
     }
 }
 
-/// Étape finale : envoie `HandoffComplete` (0x24) au shard destination et
-/// despawn la copie locale (le shard destination devient désormais Owned).
 pub fn finalize_handoff_system(
     mut queue: ResMut<HandoffCompleteQueue>,
     mut commands: Commands,
