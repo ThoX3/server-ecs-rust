@@ -196,7 +196,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             for action in actions {
                 if let SpatialAction::ScaleDown { parent_shard, old_shards } = action {
                     info!("Shards {:?} underpopulated! Requesting Orchestrator to ScaleDown to parent: {}", old_shards, parent_shard);
-                    let mut msg = vec![0x15];
+                    let mut msg = vec![0x08];
+                    let topic = b"orchestrator_commands";
+                    let mut t = [0u8; 32];
+                    t[..topic.len()].copy_from_slice(topic);
+                    msg.extend_from_slice(&t);
+                    msg.push(0x15);
                     msg.extend_from_slice(&parent_shard.to_le_bytes());
                     for os in &old_shards {
                         msg.extend_from_slice(&os.to_le_bytes());
@@ -207,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     pending_ready.insert(parent_shard, parent_shard);
                     parent_to_children.insert(parent_shard, vec![parent_shard]); // Just wait for parent
                     
-                    let _ = socket.send_to(&msg, &orch_addr).await;
+                    let _ = socket.send_to(&msg, &broker_addr).await;
                 }
             }
         }

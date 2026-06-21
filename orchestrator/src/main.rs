@@ -82,53 +82,50 @@ async fn heartbeat_listener(
         let (len, _sender_addr) = socket.recv_from(&mut buf).await?;
         if len == 0 { continue; }
         
-        if buf[0] == 0x08 && len >= 34 {
-            let tag = buf[32]; // The inner tag
-            if tag == 0x13 && len >= 53 {
-                // ScaleUp
-                let parent = u32::from_le_bytes(buf[33..37].try_into().unwrap());
-                let s1 = u32::from_le_bytes(buf[37..41].try_into().unwrap());
-                let s2 = u32::from_le_bytes(buf[41..45].try_into().unwrap());
-                let s3 = u32::from_le_bytes(buf[45..49].try_into().unwrap());
-                let s4 = u32::from_le_bytes(buf[49..53].try_into().unwrap());
-                info!("Received ScaleUp instruction for shards {}, {}, {}, {}", s1, s2, s3, s4);
-                
-                let port = find_free_port().unwrap_or(7100);
-                match spawn_server(port, vec![s1, s2, s3, s4]) {
-                    Ok(child) => {
-                        let mut procs = processes.lock().await;
-                        procs.insert(s1, child);
-                    }
-                    Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
-                }
-                continue;
-            } else if tag == 0x15 && len >= 53 {
-                // ScaleDown
-                let parent = u32::from_le_bytes(buf[33..37].try_into().unwrap());
-                let s1 = u32::from_le_bytes(buf[37..41].try_into().unwrap());
-                let s2 = u32::from_le_bytes(buf[41..45].try_into().unwrap());
-                let s3 = u32::from_le_bytes(buf[45..49].try_into().unwrap());
-                let s4 = u32::from_le_bytes(buf[49..53].try_into().unwrap());
-                info!("Received ScaleDown instruction. Merging shards {}, {}, {}, {} into parent {}", s1, s2, s3, s4, parent);
-                
-                {
+        if buf[0] == 0x13 && len >= 21 {
+            // ScaleUp
+            let parent = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+            let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+            let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
+            let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
+            info!("Received ScaleUp instruction for shards {}, {}, {}, {}", s1, s2, s3, s4);
+            
+            let port = find_free_port().unwrap_or(7100);
+            match spawn_server(port, vec![s1, s2, s3, s4]) {
+                Ok(child) => {
                     let mut procs = processes.lock().await;
-                    if let Some(mut child) = procs.remove(&s1) {
-                        info!("Killing dedicated server process for child shards.");
-                        let _ = child.kill();
-                    }
+                    procs.insert(s1, child);
                 }
-
-                let port = find_free_port().unwrap_or(7100);
-                match spawn_server(port, vec![parent]) {
-                    Ok(child) => {
-                        let mut procs = processes.lock().await;
-                        procs.insert(parent, child);
-                    }
-                    Err(e) => error!("Failed to spawn parent server on port {}: {:?}", port, e),
-                }
-                continue;
+                Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
             }
+            continue;
+        } else if buf[0] == 0x15 && len >= 21 {
+            // ScaleDown
+            let parent = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+            let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+            let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
+            let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
+            info!("Received ScaleDown instruction. Merging shards {}, {}, {}, {} into parent {}", s1, s2, s3, s4, parent);
+            
+            {
+                let mut procs = processes.lock().await;
+                if let Some(mut child) = procs.remove(&s1) {
+                    info!("Killing dedicated server process for child shards.");
+                    let _ = child.kill();
+                }
+            }
+
+            let port = find_free_port().unwrap_or(7100);
+            match spawn_server(port, vec![parent]) {
+                Ok(child) => {
+                    let mut procs = processes.lock().await;
+                    procs.insert(parent, child);
+                }
+                Err(e) => error!("Failed to spawn parent server on port {}: {:?}", port, e),
+            }
+            continue;
         }
 
         if let Ok(hb) = serde_json::from_slice::<Heartbeat>(&buf[..len]) {
