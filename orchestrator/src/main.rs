@@ -4,6 +4,8 @@ use std::env;
 use std::io;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
+use tokio::sync::Mutex;
+use std::collections::HashMap;
 use shared::logger::{info, warn, error};
 use tokio::time::{interval, Duration};
 
@@ -35,9 +37,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let listener_redis = redis_client_shared.clone();
 
+    // Store server processes to allow killing them on ScaleDown
+    let processes: Arc<Mutex<HashMap<u32, std::process::Child>>> = Arc::new(Mutex::new(HashMap::new()));
+    let listener_processes = processes.clone();
+
     // Listen for heartbeats.
     let heartbeat_handle = tokio::spawn(async move {
-        if let Err(e) = heartbeat_listener(listener_socket, listener_redis).await {
+        if let Err(e) = heartbeat_listener(listener_socket, listener_redis, listener_processes).await {
             error!("Erreur dans la tâche heartbeat_listener: {:?}", e);
         }
     });
@@ -57,6 +63,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 async fn heartbeat_listener(
     socket: Arc<UdpSocket>,
     redis_client: Arc<redis::Client>,
+    processes: Arc<Mutex<HashMap<u32, std::process::Child>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Receive heartbeats and update Redis.
     let mut buf = [0u8; 2048];
@@ -76,8 +83,43 @@ async fn heartbeat_listener(
             
             // Find a port
             let port = find_free_port().unwrap_or(7100);
-            if let Err(e) = spawn_server(port, vec![s1, s2, s3, s4]) {
-                error!("Failed to spawn server on port {}: {:?}", port, e);
+            match spawn_server(port, vec![s1, s2, s3, s4]) {
+                Ok(child) => {
+                    let mut procs = processes.lock().await;
+                    procs.insert(s1, child);
+                    // Only need to map one of the shards to kill the process later
+                }
+                Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
+            }
+            continue;
+        }
+
+        if buf[0] == 0x15 && len >= 21 {
+            // ScaleDown: 0x15 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
+            let parent = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+            let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+            let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
+            let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
+            info!("Received ScaleDown instruction. Merging shards {}, {}, {}, {} into parent {}", s1, s2, s3, s4, parent);
+            
+            // Kill the old server that was managing these shards
+            {
+                let mut procs = processes.lock().await;
+                if let Some(mut child) = procs.remove(&s1) {
+                    info!("Killing dedicated server process for child shards.");
+                    let _ = child.kill();
+                }
+            }
+
+            // Spawn the parent server
+            let port = find_free_port().unwrap_or(7100);
+            match spawn_server(port, vec![parent]) {
+                Ok(child) => {
+                    let mut procs = processes.lock().await;
+                    procs.insert(parent, child);
+                }
+                Err(e) => error!("Failed to spawn parent server on port {}: {:?}", port, e),
             }
             continue;
         }
@@ -210,7 +252,7 @@ fn find_free_port() -> Option<u16> {
     None
 }
 
-fn spawn_server(port: u16, shards: Vec<u32>) -> io::Result<()> {
+fn spawn_server(port: u16, shards: Vec<u32>) -> io::Result<std::process::Child> {
     let ds_path = env::var("DS_BINARY_PATH").unwrap_or_else(|_| "cargo".to_string());
 
     let mut cmd = std::process::Command::new(&ds_path);
@@ -222,9 +264,9 @@ fn spawn_server(port: u16, shards: Vec<u32>) -> io::Result<()> {
     let shards_str = shards.iter().map(|s| format!("shard:{}", s)).collect::<Vec<_>>().join(",");
     info!("Spawning server on port {} managing shards: {}", port, shards_str);
 
-    cmd.env("DS_PORT", port.to_string())
+    let child = cmd.env("DS_PORT", port.to_string())
        .env("SHARDS", shards_str)
        .spawn()?;
 
-    Ok(())
+    Ok(child)
 }

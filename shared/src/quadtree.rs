@@ -15,6 +15,7 @@ pub enum SpatialAction {
     CrossingAlert { client_id: u32, shards: Vec<u32> },
     AuthorityChange { client_id: u32, old_shard: u32, new_shard: u32 },
     ScaleUp { parent_shard: u32, new_shards: Vec<u32> },
+    ScaleDown { parent_shard: u32, old_shards: Vec<u32> },
 }
 
 pub fn string_to_topic(s: &str) -> [u8; 32] {
@@ -82,7 +83,7 @@ impl QuadTree {
             QuadTree::new(sw_bounds, next_depth, self.max_depth),
             QuadTree::new(se_bounds, next_depth, self.max_depth),
         ]));
-        self.shard_id = None; // inner node has no shard
+        // Keep shard_id intact so we can restore it on merge
     }
 
     /// Recursively define leaf shards in sequence
@@ -138,9 +139,11 @@ impl QuadTree {
                     return Some(id);
                 }
             }
+        } else {
+            return self.shard_id;
         }
 
-        self.shard_id
+        None
     }
 
     /// Return distinct shard_ids in a radius `margin` around `pos`.
@@ -167,6 +170,40 @@ impl QuadTree {
             result.push(id);
         }
     }
+
+    /// Try to find a node where all 4 children are leaves and combined population <= max_pop.
+    /// Returns (parent_shard, [child_1, child_2, child_3, child_4]) if found and merged.
+    pub fn try_merge(&mut self, pop_map: &std::collections::HashMap<u32, usize>, max_pop: usize) -> Option<(u32, [u32; 4])> {
+        if let Some(children) = &mut self.children {
+            // Check if any child can be merged recursively first
+            for child in children.iter_mut() {
+                if let Some(res) = child.try_merge(pop_map, max_pop) {
+                    return Some(res);
+                }
+            }
+
+            // All children must be leaves and the current node must have a shard_id (root does not)
+            if let Some(parent_id) = self.shard_id {
+                let all_leaves = children.iter().all(|c| c.children.is_none());
+                if all_leaves {
+                    let mut total_pop = 0;
+                    let mut child_ids = [0u32; 4];
+                    for (i, child) in children.iter().enumerate() {
+                        let cid = child.shard_id.unwrap();
+                        total_pop += pop_map.get(&cid).copied().unwrap_or(0);
+                        child_ids[i] = cid;
+                    }
+
+                    if total_pop <= max_pop {
+                        // Merge!
+                        self.children = None;
+                        return Some((parent_id, child_ids));
+                    }
+                }
+            }
+        }
+        None
+    }
 }
 
 fn rects_overlap(r1: Rect, r2: Rect) -> bool {
@@ -180,10 +217,12 @@ pub struct SpatialService {
     pub client_subscribed_shards: std::collections::HashMap<u32, Vec<u32>>,
     pub next_shard_id: u32,
     pub pending_splits: std::collections::HashSet<u32>,
+    pub pending_merges: std::collections::HashSet<u32>, // parent shards waiting for ScaleDown completion
 }
 
 impl SpatialService {
     pub const MAX_POPULATION: usize = 2; // Very low for testing dynamic scaling
+    pub const MIN_POPULATION: usize = 1; // Merge when 1 for testing
 
     pub fn new(quadtree: QuadTree, margin: f32, next_shard_id: u32) -> Self {
         Self {
@@ -193,6 +232,7 @@ impl SpatialService {
             client_subscribed_shards: std::collections::HashMap::new(),
             next_shard_id,
             pending_splits: std::collections::HashSet::new(),
+            pending_merges: std::collections::HashSet::new(),
         }
     }
 
@@ -281,7 +321,7 @@ impl SpatialService {
 
         // Check Population for splits
         if let Some(primary) = new_shard_opt {
-            if !self.pending_splits.contains(&primary) {
+            if !self.pending_splits.contains(&primary) && !self.pending_merges.contains(&primary) {
                 let pop = self.client_primary_shard.values().filter(|&&s| s == primary).count();
                 if pop > Self::MAX_POPULATION {
                     self.pending_splits.insert(primary);
@@ -296,6 +336,26 @@ impl SpatialService {
             }
         }
 
+        actions
+    }
+
+    pub fn check_merges(&mut self) -> Vec<SpatialAction> {
+        let mut actions = Vec::new();
+        let mut pop_map = std::collections::HashMap::new();
+        for &shard in self.client_primary_shard.values() {
+            *pop_map.entry(shard).or_insert(0) += 1;
+        }
+
+        // We can loop to find multiple merges, but 1 is fine for now
+        if let Some((parent_shard, old_shards_arr)) = self.quadtree.try_merge(&pop_map, Self::MIN_POPULATION) {
+            let old_shards = old_shards_arr.to_vec();
+            self.pending_merges.insert(parent_shard);
+            actions.push(SpatialAction::ScaleDown {
+                parent_shard,
+                old_shards,
+            });
+        }
+        
         actions
     }
 }

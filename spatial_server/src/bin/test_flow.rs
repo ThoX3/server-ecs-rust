@@ -218,6 +218,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("--- Step 6: Verifying Handoff routing ---");
     // Client 43 sends another position update
     client2.send_to(&p2, "127.0.0.1:9000").await?;
+    // Client 42 sends another position update to transition to Shard 4
+    client.send_to(&pos_msg, "127.0.0.1:9000").await?;
     
     // Listen on Shard 0 (which was the parent) to verify it received the AuthorityChange to drop them
     // Wait, SpatialServer sends the AuthorityChange to Broker, Broker forwards it to the *client's subscribed topics' authorities*.
@@ -240,6 +242,74 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     if !found_auth_split {
         error!("[ERROR] AuthorityChange was not broadcasted after the Split and Ready handoff!");
+    }
+
+    // --- STEP 7: Merging (Phase 4) ---
+    info!("--- Step 7: Disconnecting clients to trigger Merge ---");
+    // Send Disconnect (0x07) directly to Spatial Server for client2 and client3
+    let mut dis_msg = [0u8; 5];
+    dis_msg[0] = 0x07;
+    
+    dis_msg[1..5].copy_from_slice(&43u32.to_le_bytes());
+    client2.send_to(&dis_msg, "127.0.0.1:9001").await?;
+    
+    dis_msg[1..5].copy_from_slice(&44u32.to_le_bytes());
+    client3.send_to(&dis_msg, "127.0.0.1:9001").await?;
+    
+    // This leaves only client 42, total population = 1 (which matches MIN_POPULATION = 1)
+    // Wait for Orchestrator to receive ScaleDown (0x15)
+    let mut found_scaledown = false;
+    let start_time = tokio::time::Instant::now();
+    while start_time.elapsed() < Duration::from_secs(1) {
+        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(100), mock_orch.recv_from(&mut buf)).await {
+            if buf[0] == 0x15 && len >= 21 {
+                let parent = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+                let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+                let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+                let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
+                let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
+                info!("[SUCCESS] Orchestrator received ScaleDown! Merging [{}, {}, {}, {}] into {}", s1, s2, s3, s4, parent);
+                found_scaledown = true;
+                break;
+            }
+        }
+    }
+    
+    if !found_scaledown {
+        error!("[ERROR] Orchestrator did not receive ScaleDown packet!");
+    }
+
+    info!("--- Step 8: Parent Server Boots and takes Authority ---");
+    // Send Ready for Shard 0
+    let mut ready_msg = [0u8; 5];
+    ready_msg[0] = 0x14;
+    ready_msg[1..5].copy_from_slice(&0u32.to_le_bytes()); // parent shard 0
+    shard0.send_to(&ready_msg, "127.0.0.1:9000").await?; // to broker
+    
+    sleep(Duration::from_millis(500)).await;
+    
+    // Client 42 sends a position update, which should trigger the AuthorityChange back to Shard 0!
+    client.send_to(&pos_msg, "127.0.0.1:9000").await?;
+    
+    let mut found_auth_merge = false;
+    let start_time = tokio::time::Instant::now();
+    while start_time.elapsed() < Duration::from_secs(1) {
+        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(100), shard0.recv_from(&mut buf)).await {
+            if buf[0] == 0x12 {
+                let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+                let old_shard = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+                let new_shard = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+                if new_shard == 0 {
+                    info!("[SUCCESS] Shard 0 received Authority Change after Merge for client {}: {} -> {}", rec_client, old_shard, new_shard);
+                    found_auth_merge = true;
+                    break;
+                }
+            }
+        }
+    }
+    
+    if !found_auth_merge {
+        error!("[ERROR] AuthorityChange was not broadcasted after the Merge and Ready handoff!");
     }
 
     info!("Test flow completed. Shutting down...");

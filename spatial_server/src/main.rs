@@ -122,6 +122,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             
                             let _ = socket.send_to(&msg, &orch_addr).await;
                         }
+                        SpatialAction::ScaleDown { parent_shard, old_shards } => {
+                            // ScaleDown to Orchestrator: 0x15 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
+                            info!("Shards {:?} underpopulated! Requesting Orchestrator to ScaleDown to parent: {}", old_shards, parent_shard);
+                            let mut msg = vec![0x15];
+                            msg.extend_from_slice(&parent_shard.to_le_bytes());
+                            for os in &old_shards {
+                                msg.extend_from_slice(&os.to_le_bytes());
+                            }
+                            
+                            // We wait for the parent_shard to send Ready before we confirm handoff
+                            pending_ready.insert(parent_shard, parent_shard);
+                            parent_to_children.insert(parent_shard, old_shards);
+                            
+                            let _ = socket.send_to(&msg, &orch_addr).await;
+                        }
                     }
                 }
             } else if sub_tag == 0x14 {
@@ -134,30 +149,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         pending_ready.remove(&shard_id);
                         if let Some(children) = parent_to_children.get_mut(&parent_shard) {
                             children.retain(|&x| x != shard_id);
-                            
                             if children.is_empty() {
-                                info!("All children for parent shard {} are ready! Executing Handoff.", parent_shard);
-                                parent_to_children.remove(&parent_shard);
-                                spatial_service.pending_splits.remove(&parent_shard);
-                                
-                                // Send AuthorityChange to ALL clients in the parent shard to their respective new shards
-                                let mut clients_to_move = Vec::new();
-                                for (&c_id, &p_shard) in &spatial_service.client_primary_shard {
-                                    if p_shard == parent_shard {
-                                        clients_to_move.push(c_id);
-                                    }
+                                // But for ScaleDown, old_shards are children, new_shard is parent!
+                                // Check if this was a merge (parent_shard was in pending_merges)
+                                if spatial_service.pending_merges.contains(&parent_shard) {
+                                    info!("Parent shard {} is ready after ScaleDown! Emitting AuthorityChange to merge clients.", parent_shard);
+                                    spatial_service.pending_merges.remove(&parent_shard);
+                                    
+                                    // Move clients from old_shards to parent_shard
+                                    // But wait, the QuadTree ALREADY updated its structure during `try_merge`!
+                                    // So the clients are just waiting for `AuthorityChange` on their next PositionUpdate, just like split!
+                                    info!("Merge handoff completed. Clients will transition on next update.");
+                                } else {
+                                    info!("All children for parent shard {} are ready! Executing Handoff.", parent_shard);
+                                    spatial_service.pending_splits.remove(&parent_shard);
+                                    info!("Split handoff completed for parent {}. Clients will transition seamlessly on their next update.", parent_shard);
                                 }
-                                
-                                // We simulate receiving a PositionUpdate for them so they are routed correctly
-                                // But since we don't store their absolute position, we need a better way.
-                                // Oh wait, SpatialService doesn't store client positions.
-                                // It just needs to drop the parent shard. The next PositionUpdate from the client will naturally assign them!
-                                // BUT the client needs the AuthorityChange packet.
-                                // Actually, we can just send AuthorityChange upon their next PositionUpdate, because the QuadTree has already been split.
-                                // So when they send the next PositionUpdate, it will say "Oh you are in shard 4 now".
-                                // And SpatialService will see `current_primary == parent_shard`, and emit `AuthorityChange`.
-                                // This works perfectly without doing anything here!
-                                info!("Handoff completed for parent {}. Clients will transition seamlessly on their next update.", parent_shard);
+                                parent_to_children.remove(&parent_shard);
                             }
                         }
                     }
@@ -175,6 +183,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Client {} disconnected, removed from spatial tracking.",
                 client_id
             );
+            
+            // Check for potential merges
+            let actions = spatial_service.check_merges();
+            for action in actions {
+                if let SpatialAction::ScaleDown { parent_shard, old_shards } = action {
+                    info!("Shards {:?} underpopulated! Requesting Orchestrator to ScaleDown to parent: {}", old_shards, parent_shard);
+                    let mut msg = vec![0x15];
+                    msg.extend_from_slice(&parent_shard.to_le_bytes());
+                    for os in &old_shards {
+                        msg.extend_from_slice(&os.to_le_bytes());
+                    }
+                    
+                    // We wait for the parent_shard to send Ready before we confirm handoff
+                    // Use pending_ready but map parent_shard to itself
+                    pending_ready.insert(parent_shard, parent_shard);
+                    parent_to_children.insert(parent_shard, vec![parent_shard]); // Just wait for parent
+                    
+                    let _ = socket.send_to(&msg, &orch_addr).await;
+                }
+            }
         }
     }
 }
