@@ -61,11 +61,13 @@ fn handle_crossing_alert(state: &mut BrokerState, socket: &UdpSocket, data: &[u8
     let client_id_bytes = data[0..4].try_into().unwrap();
     let client_id = u32::from_le_bytes(client_id_bytes);
 
-    if let Some(topic) = state.client_to_topic.get(&client_id) {
-        if let Some(route) = state.routes.get(topic) {
-            let mut shard_msg = vec![0x11];
-            shard_msg.extend_from_slice(data);
-            let _ = socket.send_to(&shard_msg, route.authority_shard);
+    if let Some(topics) = state.client_to_topics.get(&client_id) {
+        for topic in topics {
+            if let Some(route) = state.routes.get(topic) {
+                let mut shard_msg = vec![0x11];
+                shard_msg.extend_from_slice(data);
+                let _ = socket.send_to(&shard_msg, route.authority_shard);
+            }
         }
     }
 }
