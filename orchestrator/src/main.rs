@@ -4,6 +4,7 @@ use std::env;
 use std::io;
 use std::sync::Arc;
 use tokio::net::UdpSocket;
+use shared::logger::{info, warn, error};
 use tokio::time::{interval, Duration};
 
 const TTL_SECONDS: u64 = 15; // Temps avant qu'un serveur soit considéré comme mort
@@ -13,8 +14,9 @@ const BASE_DS_PORT: u16 = 7001; // Port de départ pour attribuer aux nouveaux s
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    shared::logger::init_logger("Orchestrator");
     // Boot the orchestrator and its tasks.
-    println!("Démarrage de l'orchestrateur...");
+    info!("Démarrage de l'orchestrateur...");
 
     let orch_port = std::env::var("ORCH_PORT")
         .unwrap_or_else(|_| "8000".to_string())
@@ -22,7 +24,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(8000);
 
     let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", orch_port)).await?);
-    println!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
+    info!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
 
     // Client Redis partagé entre les tâches
     let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
@@ -36,14 +38,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Listen for heartbeats.
     let heartbeat_handle = tokio::spawn(async move {
         if let Err(e) = heartbeat_listener(listener_socket, listener_redis).await {
-            eprintln!("Erreur dans la tâche heartbeat_listener: {:?}", e);
+            error!("Erreur dans la tâche heartbeat_listener: {:?}", e);
         }
     });
 
     // Monitor and scale the fleet.
     let scaler_handle = tokio::spawn(async move {
         if let Err(e) = scaler_loop(redis_client_shared).await {
-            eprintln!("Erreur dans la tâche scaler_loop: {:?}", e);
+            error!("Erreur dans la tâche scaler_loop: {:?}", e);
         }
     });
 
@@ -62,6 +64,23 @@ async fn heartbeat_listener(
 
     loop {
         let (len, _sender_addr) = socket.recv_from(&mut buf).await?;
+        if len == 0 { continue; }
+        
+        if buf[0] == 0x13 && len >= 21 {
+            // ScaleUp: 0x13 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
+            let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+            let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+            let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
+            let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
+            info!("Received ScaleUp instruction for shards {}, {}, {}, {}", s1, s2, s3, s4);
+            
+            // Find a port
+            let port = find_free_port().unwrap_or(7100);
+            if let Err(e) = spawn_server(port, vec![s1, s2, s3, s4]) {
+                error!("Failed to spawn server on port {}: {:?}", port, e);
+            }
+            continue;
+        }
 
         if let Ok(hb) = serde_json::from_slice::<Heartbeat>(&buf[..len]) {
             let redis_key = format!("server:{}", hb.id);
@@ -84,7 +103,7 @@ async fn heartbeat_listener(
                 .query_async(&mut con)
                 .await?;
 
-            println!(
+            info!(
                 "Heartbeat traité pour le serveur {} (Statut: {})",
                 hb.id, status
             );
@@ -102,14 +121,14 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
 
         match count_available_servers(redis_client.clone()).await {
             Ok(available_count) => {
-                println!(
+                info!(
                     "Flotte actuelle : {} serveurs disponibles (Requis minimum : {})",
                     available_count, HOT_SERVERS_MIN
                 );
 
                 if available_count < HOT_SERVERS_MIN {
                     let needed = HOT_SERVERS_MIN - available_count;
-                    println!(
+                    warn!(
                         "Alerte sous-effectif ! Lancement de {} serveur(s) dédié(s)...",
                         needed
                     );
@@ -118,8 +137,9 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
                         let port = next_port_to_use;
                         next_port_to_use += 1;
 
-                        if let Err(e) = spawn_server(port) {
-                            eprintln!(
+                        // Spawn a basic server for shard:0 as fallback
+                        if let Err(e) = spawn_server(port, vec![0]) {
+                            error!(
                                 "Impossible de spawner le serveur sur le port {}: {:?}",
                                 port, e
                             );
@@ -127,7 +147,7 @@ async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std
                     }
                 }
             }
-            Err(e) => eprintln!("Erreur lors du calcul de la flotte dans Redis : {:?}", e),
+            Err(e) => error!("Erreur lors du calcul de la flotte dans Redis : {:?}", e),
         }
     }
 }
@@ -181,7 +201,16 @@ async fn count_available_servers(
     Ok(available_count)
 }
 
-fn spawn_server(port: u16) -> io::Result<()> {
+fn find_free_port() -> Option<u16> {
+    for port in 7100..7200 {
+        if std::net::UdpSocket::bind(format!("127.0.0.1:{}", port)).is_ok() {
+            return Some(port);
+        }
+    }
+    None
+}
+
+fn spawn_server(port: u16, shards: Vec<u32>) -> io::Result<()> {
     let ds_path = env::var("DS_BINARY_PATH").unwrap_or_else(|_| "cargo".to_string());
 
     let mut cmd = std::process::Command::new(&ds_path);
@@ -190,7 +219,12 @@ fn spawn_server(port: u16) -> io::Result<()> {
         cmd.arg("run").arg("-p").arg("dedicated_server").arg("--");
     }
 
-    cmd.env("DS_PORT", port.to_string()).spawn()?;
+    let shards_str = shards.iter().map(|s| format!("shard:{}", s)).collect::<Vec<_>>().join(",");
+    info!("Spawning server on port {} managing shards: {}", port, shards_str);
+
+    cmd.env("DS_PORT", port.to_string())
+       .env("SHARDS", shards_str)
+       .spawn()?;
 
     Ok(())
 }

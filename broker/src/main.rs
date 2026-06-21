@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
+use shared::logger::{info, warn};
 
 type Topic = [u8; 32];
 type ClientId = u32;
@@ -26,11 +27,12 @@ impl BrokerState {
 }
 
 fn main() -> std::io::Result<()> {
+    shared::logger::init_logger("Broker");
     let socket = UdpSocket::bind("0.0.0.0:9000")?;
     let mut state = BrokerState::new();
     let mut buf = [0u8; 2048];
 
-    println!("Broker PubSub démarré sur le port 9000...");
+    info!("Broker PubSub démarré sur le port 9000...");
 
     loop {
         let (amt, src) = socket.recv_from(&mut buf)?;
@@ -51,8 +53,29 @@ fn main() -> std::io::Result<()> {
             0x07 => handle_client_disconnect(&mut state, &socket, payload),
             0x11 => handle_crossing_alert(&mut state, &socket, payload),
             0x12 => handle_authority_change(&mut state, &socket, payload),
-            _ => eprintln!("Tag inconnu: 0x{:02X}", tag),
+            0x14 => handle_server_ready(&mut state, &socket, payload),
+            _ => warn!("Tag inconnu: 0x{:02X}", tag),
         }
+    }
+}
+
+fn handle_server_ready(state: &mut BrokerState, socket: &UdpSocket, data: &[u8]) {
+    // 0x14 | shard_id(4)
+    if data.len() < 4 {
+        return;
+    }
+    
+    // Route it to the spatial_updates authority
+    let mut topic = [0u8; 32];
+    let bytes = b"spatial_updates";
+    topic[..bytes.len()].copy_from_slice(bytes);
+    
+    if let Some(route) = state.routes.get(&topic) {
+        let mut msg = vec![0x05];
+        msg.extend_from_slice(&0u32.to_le_bytes()); // Dummy client ID 0
+        msg.push(0x14);
+        msg.extend_from_slice(data);
+        let _ = socket.send_to(&msg, route.authority_shard);
     }
 }
 

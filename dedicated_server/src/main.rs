@@ -9,6 +9,7 @@ use uuid::Uuid;
 
 mod resources;
 use resources::{PlayerRegistry, ServerConfig, ServerNetwork};
+use shared::logger::{info, warn, error};
 
 #[derive(Component)]
 pub struct Player {
@@ -34,6 +35,7 @@ pub enum Authority {
 }
 
 pub fn main() {
+    shared::logger::init_logger("DedicatedServer");
     // Start the dedicated server.
     let config = ServerConfig::from_env();
 
@@ -47,7 +49,18 @@ pub fn main() {
         let topic_bytes = shard.as_bytes();
         reg_msg[1..1 + topic_bytes.len()].copy_from_slice(topic_bytes);
         let _ = socket.send_to(&reg_msg, config.broker_addr);
-        println!("Registered shard authority for: {}", shard);
+        info!("Registered shard authority for: {}", shard);
+        
+        // Notify Spatial Server that we are ready
+        if let Some(id_str) = shard.split(':').nth(1) {
+            if let Ok(shard_id) = id_str.parse::<u32>() {
+                let mut ready_msg = [0u8; 5];
+                ready_msg[0] = 0x14;
+                ready_msg[1..5].copy_from_slice(&shard_id.to_le_bytes());
+                let _ = socket.send_to(&ready_msg, config.broker_addr);
+                info!("Sent Ready signal for shard {}", shard_id);
+            }
+        }
     }
 
     let inter_shard_port = config.port + 1000;
@@ -155,7 +168,7 @@ fn handle_networks(
 
                 registry.players.insert(client_id, entity);
                 count.0.fetch_add(1, Ordering::Relaxed);
-                println!("Player {} joined shard", req.username);
+                info!("Player {} joined shard", req.username);
             }
         } else if tag == 0x07 {
             // Disconnect packet from Broker
@@ -164,7 +177,7 @@ fn handle_networks(
             if let Some(entity) = registry.players.remove(&client_id) {
                 commands.entity(entity).despawn();
                 count.0.fetch_sub(1, Ordering::Relaxed);
-                println!("Client {} disconnected from shard", client_id);
+                info!("Client {} disconnected from shard", client_id);
             }
         } else if tag == 0x12 {
             // AuthorityChange: 0x12 | client_id(4) | old_shard(4) | new_shard(4)
@@ -180,10 +193,10 @@ fn handle_networks(
                 if let Ok(mut entity_commands) = commands.get_entity(player_entity) {
                     if hosts_old && !hosts_new {
                         entity_commands.insert(Authority::Ghost);
-                        println!("Client {} demoted to Ghost on Shard {}", client_id, old_shard);
+                        info!("Client {} demoted to Ghost on Shard {}", client_id, old_shard);
                     } else if hosts_new {
                         entity_commands.insert(Authority::Owned);
-                        println!("Client {} promoted to Owned on Shard {}", client_id, new_shard);
+                        info!("Client {} promoted to Owned on Shard {}", client_id, new_shard);
                     }
                 }
             }
