@@ -1,9 +1,9 @@
+use shared::logger::{error, info};
 use std::process::Command;
-use std::time::Duration;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
-use shared::logger::{info, error};
 
 struct MockClient {
     id: u32,
@@ -13,7 +13,7 @@ struct MockClient {
 impl MockClient {
     async fn new(id: u32) -> Self {
         let socket = Arc::new(UdpSocket::bind("127.0.0.1:0").await.unwrap());
-        
+
         // Subscribe to spatial_updates
         let mut sub_msg = [0u8; 37];
         sub_msg[0] = 0x01;
@@ -68,7 +68,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .args(["build", "--workspace"])
         .status()
         .expect("Failed to execute cargo build");
-    
+
     if !build_status.success() {
         error!("[ERROR] Failed to pre-build workspace!");
         return Err("Build failed".into());
@@ -76,18 +76,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // 1. Boot Services
     info!("[TEST] Spawning Services...");
-    let mut broker_process = Command::new("./target/debug/broker").spawn().unwrap();
-    let mut gatekeeper_process = Command::new("./target/debug/gatekeeper").spawn().unwrap();
+    let broker_process = Command::new("./target/debug/broker").spawn().unwrap();
+    let gatekeeper_process = Command::new("./target/debug/gatekeeper").spawn().unwrap();
     sleep(Duration::from_millis(1000)).await;
 
-    let mut spatial_process = Command::new("./target/debug/spatial_server")
+    let spatial_process = Command::new("./target/debug/spatial_server")
         .env("PORT", "9001")
         .env("BROKER_ADDR", "127.0.0.1:9000")
         .env("ORCH_ADDR", "127.0.0.1:8000")
         .spawn().unwrap();
     sleep(Duration::from_millis(500)).await;
 
-    let mut orchestrator_process = Command::new("./target/debug/orchestrator")
+    let orchestrator_process = Command::new("./target/debug/orchestrator")
         .env("HOT_SERVERS_MIN", "1")
         .env("ORCH_PORT", "8000")
         .env("DS_BINARY_PATH", "./target/debug/dedicated_server")
@@ -98,7 +98,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // We skip actual Gatekeeper HTTP login since we know it just assigns random UUIDs
     // and returns the broker IP. We just mock client IDs to control them easily.
-    
+
     let client_a = MockClient::new(101).await;
     let client_b = MockClient::new(102).await;
     let client_c = MockClient::new(103).await;
@@ -125,7 +125,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     client_a.move_to(-250.0, 250.0).await;
     client_b.move_to(-250.0, 250.0).await;
     client_c.move_to(-250.0, 250.0).await;
-    
+
     info!("Waiting for ScaleUp and Authority migration...");
     // When ScaleUp happens, all 3 clients should receive a new AuthorityChange moving them to shard:1
     let mut scaleup_success = false;
@@ -175,7 +175,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Clients B and C disconnect
     client_b.disconnect().await;
     client_c.disconnect().await;
-    
+
     info!("Waiting for ScaleDown and Authority migration to parent...");
     let mut scaledown_success = false;
     for _ in 0..100 { // wait up to 10 seconds for orchestrator to kill children and boot parent

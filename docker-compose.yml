@@ -14,7 +14,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: gatekeeper
-    command: ["./gatekeeper"]
+    command: [ "./gatekeeper" ]
     ports:
       - "3000:3000"
     environment:
@@ -27,7 +27,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: orchestrator
-    command: ["./orchestrator"]
+    command: [ "./orchestrator" ]
     environment:
       - REDIS_URL=redis://redis:6379
       - ORCH_PORT=8000
@@ -43,7 +43,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: broker
-    command: ["./broker"]
+    command: [ "./broker" ]
     ports:
       - "9000:9000/udp"
 
@@ -52,7 +52,7 @@ services:
       context: .
       dockerfile: Dockerfile
     container_name: spatial_server
-    command: ["./spatial_server"]
+    command: [ "./spatial_server" ]
     ports:
       - "9001:9001/udp"
     environment:

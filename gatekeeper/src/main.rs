@@ -1,8 +1,8 @@
 use axum::{routing::{get, post}, Router};
 use deadpool_redis::{Config, Runtime};
-use std::sync::Arc;
-use std::net::SocketAddr;
 use shared::logger::info;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 mod handlers;
 mod redis_pool;

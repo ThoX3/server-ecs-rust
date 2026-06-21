@@ -1,6 +1,6 @@
+use shared::logger::{info, warn};
 use std::collections::{HashMap, HashSet};
 use std::net::{SocketAddr, UdpSocket};
-use shared::logger::{info, warn};
 
 type Topic = [u8; 32];
 type ClientId = u32;
@@ -65,11 +65,11 @@ fn handle_route_to_topic(state: &mut BrokerState, socket: &UdpSocket, data: &[u8
     if data.len() < 32 {
         return;
     }
-    
+
     let mut topic = [0u8; 32];
     topic.copy_from_slice(&data[0..32]);
     let payload = &data[32..];
-    
+
     if let Some(route) = state.routes.get(&topic) {
         let _ = socket.send_to(payload, route.authority_shard);
     }
@@ -80,12 +80,12 @@ fn handle_server_ready(state: &mut BrokerState, socket: &UdpSocket, data: &[u8])
     if data.len() < 4 {
         return;
     }
-    
+
     // Route it to the spatial_updates authority
     let mut topic = [0u8; 32];
     let bytes = b"spatial_updates";
     topic[..bytes.len()].copy_from_slice(bytes);
-    
+
     if let Some(route) = state.routes.get(&topic) {
         let mut msg = vec![0x05];
         msg.extend_from_slice(&0u32.to_le_bytes()); // Dummy client ID 0
@@ -162,7 +162,7 @@ fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
     if let Ok(client_id_bytes) = data[0..4].try_into() {
         let client_id = u32::from_le_bytes(client_id_bytes);
         let mut topic = [0u8; 32];
-    topic.copy_from_slice(&data[4..36]);
+        topic.copy_from_slice(&data[4..36]);
 
         state
             .client_to_topics
@@ -184,7 +184,7 @@ fn handle_unsubscribe(state: &mut BrokerState, data: &[u8]) {
     if let Ok(client_id_bytes) = data[0..4].try_into() {
         let client_id = u32::from_le_bytes(client_id_bytes);
         let mut topic = [0u8; 32];
-    topic.copy_from_slice(&data[4..36]);
+        topic.copy_from_slice(&data[4..36]);
 
         if let Some(topics) = state.client_to_topics.get_mut(&client_id) {
             topics.remove(&topic);

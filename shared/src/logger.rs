@@ -1,5 +1,5 @@
+pub use tracing::{debug, error, info, trace, warn};
 use tracing_subscriber::{fmt, EnvFilter};
-pub use tracing::{info, warn, error, debug, trace};
 
 pub fn init_logger(service_name: &str) {
     let env_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));

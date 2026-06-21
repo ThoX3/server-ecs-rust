@@ -121,7 +121,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 pending_ready.insert(*ns, parent_shard);
                             }
                             parent_to_children.insert(parent_shard, new_shards);
-                            
+
                             let _ = socket.send_to(&msg, &broker_addr).await;
                         }
                         SpatialAction::ScaleDown { parent_shard, old_shards } => {
@@ -137,11 +137,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             for os in &old_shards {
                                 msg.extend_from_slice(&os.to_le_bytes());
                             }
-                            
+
                             // We wait for the parent_shard to send Ready before we confirm handoff
                             pending_ready.insert(parent_shard, parent_shard);
                             parent_to_children.insert(parent_shard, old_shards);
-                            
+
                             let _ = socket.send_to(&msg, &broker_addr).await;
                         }
                     }
@@ -151,7 +151,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if len >= 10 {
                     let shard_id = u32::from_le_bytes(buf[6..10].try_into().unwrap());
                     info!("Spatial Server received Ready signal from new shard {}!", shard_id);
-                    
+
                     if let Some(&parent_shard) = pending_ready.get(&shard_id) {
                         pending_ready.remove(&shard_id);
                         if let Some(children) = parent_to_children.get_mut(&parent_shard) {
@@ -162,7 +162,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 if spatial_service.pending_merges.contains(&parent_shard) {
                                     info!("Parent shard {} is ready after ScaleDown! Emitting AuthorityChange to merge clients.", parent_shard);
                                     spatial_service.pending_merges.remove(&parent_shard);
-                                    
+
                                     // Move clients from old_shards to parent_shard
                                     // But wait, the QuadTree ALREADY updated its structure during `try_merge`!
                                     // So the clients are just waiting for `AuthorityChange` on their next PositionUpdate, just like split!
@@ -175,6 +175,32 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 parent_to_children.remove(&parent_shard);
                             }
                         }
+                    }
+                }
+            } else if sub_tag == 0x19 {
+                // ServerCrash: 0x19 | count(4) | shard1(4) | shard2(4) ...
+                if len < 10 { continue; }
+                let count = u32::from_le_bytes(buf[6..10].try_into().unwrap());
+                let mut offset = 10;
+                let mut crashed_shards = Vec::new();
+                for _ in 0..count {
+                    if offset + 4 > len { break; }
+                    crashed_shards.push(u32::from_le_bytes(buf[offset..offset + 4].try_into().unwrap()));
+                    offset += 4;
+                }
+
+                info!("Emergency: Received ServerCrash for shards {:?}", crashed_shards);
+                let actions = spatial_service.handle_server_crash(&crashed_shards);
+
+                for action in actions {
+                    if let SpatialAction::AuthorityChange { client_id, old_shard, new_shard } = action {
+                        let mut msg = [0u8; 13];
+                        msg[0] = 0x12;
+                        msg[1..5].copy_from_slice(&client_id.to_le_bytes());
+                        msg[5..9].copy_from_slice(&old_shard.to_le_bytes());
+                        msg[9..13].copy_from_slice(&new_shard.to_le_bytes());
+                        let _ = socket.send_to(&msg, &broker_addr).await;
+                        info!("Rescued client {} back to shard {}", client_id, new_shard);
                     }
                 }
             }
@@ -190,7 +216,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "Client {} disconnected, removed from spatial tracking.",
                 client_id
             );
-            
+
             // Check for potential merges
             let actions = spatial_service.check_merges();
             for action in actions {
@@ -206,12 +232,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     for os in &old_shards {
                         msg.extend_from_slice(&os.to_le_bytes());
                     }
-                    
+
                     // We wait for the parent_shard to send Ready before we confirm handoff
                     // Use pending_ready but map parent_shard to itself
                     pending_ready.insert(parent_shard, parent_shard);
                     parent_to_children.insert(parent_shard, vec![parent_shard]); // Just wait for parent
-                    
+
                     let _ = socket.send_to(&msg, &broker_addr).await;
                 }
             }

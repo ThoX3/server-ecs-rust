@@ -1,6 +1,6 @@
 # Lab – MMORPG Server Architecture : du serveur dédié à la flotte
 
-**Cours :** Programmation réseau pour jeux 
+**Cours :** Programmation réseau pour jeux
 **Langage principal :** Rust  
 **Dépendances clés :** Bevy 0.18, `game_sockets`, Redis, Axum/Rocket
 
@@ -8,9 +8,13 @@
 
 ## Mise en contexte
 
-Les premiers MMORPGs comme *Ultima Online* (1997) ou *EverQuest* (1999) ont été les premiers à devoir résoudre un problème fondamental : comment faire jouer des milliers de joueurs simultanément sur un monde persistant ? La réponse architecturale adoptée à l'époque, et encore largement utilisée aujourd'hui, repose sur une **flotte de serveurs dédiés** coordonnés par une infrastructure d'orchestration.
+Les premiers MMORPGs comme *Ultima Online* (1997) ou *EverQuest* (1999) ont été les premiers à devoir résoudre un
+problème fondamental : comment faire jouer des milliers de joueurs simultanément sur un monde persistant ? La réponse
+architecturale adoptée à l'époque, et encore largement utilisée aujourd'hui, repose sur une **flotte de serveurs dédiés
+** coordonnés par une infrastructure d'orchestration.
 
-Dans ce laboratoire, vous allez implémenter une version simplifiée de cette architecture en quatre composants distincts qui communiquent entre eux.
+Dans ce laboratoire, vous allez implémenter une version simplifiée de cette architecture en quatre composants distincts
+qui communiquent entre eux.
 
 ---
 
@@ -60,14 +64,16 @@ Dans ce laboratoire, vous allez implémenter une version simplifiée de cette ar
 
 ### Objectif
 
-Implémenter un serveur de jeu minimaliste capable d'accepter des connexions de joueurs et d'envoyer un heartbeat périodique à l'orchestrateur.
+Implémenter un serveur de jeu minimaliste capable d'accepter des connexions de joueurs et d'envoyer un heartbeat
+périodique à l'orchestrateur.
 
 ### Comportement attendu
 
 - Écoute sur un port UDP configurable (variable d'environnement `DS_PORT`).
 - Accepte des joueurs qui envoient un message `JOIN { username }`.
 - Répond avec `WELCOME { player_id }`.
-- Envoie toutes les **5 secondes** un heartbeat UDP à l'orchestrateur : `HEARTBEAT { id, ip, port, zone, player_count }`.
+- Envoie toutes les **5 secondes** un heartbeat UDP à l'orchestrateur :
+  `HEARTBEAT { id, ip, port, zone, player_count }`.
 - Se déclare `FULL` dans son heartbeat si `player_count >= MAX_PLAYERS`.
 
 ### Structure Bevy suggérée
@@ -113,7 +119,8 @@ pub struct PlayerRegistry {
 
 ### Objectif
 
-Maintenir une flotte de serveurs dédiés. L'orchestrateur écoute les heartbeats UDP, met à jour Redis, et s'assure qu'un minimum de serveurs vides (`HOT_SERVERS_MIN`) sont toujours disponibles.
+Maintenir une flotte de serveurs dédiés. L'orchestrateur écoute les heartbeats UDP, met à jour Redis, et s'assure qu'un
+minimum de serveurs vides (`HOT_SERVERS_MIN`) sont toujours disponibles.
 
 ### Comportement attendu
 
@@ -137,7 +144,8 @@ Maintenir une flotte de serveurs dédiés. L'orchestrateur écoute les heartbeat
 
 ### Objectif
 
-Redis joue le rôle de **registre partagé** entre l'orchestrateur et le Gatekeeper. Vous n'implémentez pas Redis vous-mêmes : vous le configurez et vous comprenez son rôle.
+Redis joue le rôle de **registre partagé** entre l'orchestrateur et le Gatekeeper. Vous n'implémentez pas Redis
+vous-mêmes : vous le configurez et vous comprenez son rôle.
 
 ### Démarrage
 
@@ -167,18 +175,21 @@ redis-cli MONITOR                       # observer les commandes en temps réel
 
 ### Objectif
 
-Exposer une API REST simple. Le Gatekeeper est le point d'entrée unique du client : il authentifie (de façon fictive) et retourne les coordonnées d'un serveur disponible.
+Exposer une API REST simple. Le Gatekeeper est le point d'entrée unique du client : il authentifie (de façon fictive) et
+retourne les coordonnées d'un serveur disponible.
 
 ### Endpoints
 
 #### `POST /login`
 
 **Corps de la requête :**
+
 ```json
 { "username": "valere", "password": "1234" }
 ```
 
 **Réponse succès (200) :**
+
 ```json
 {
   "player_id": "uuid-généré",
@@ -191,6 +202,7 @@ Exposer une API REST simple. Le Gatekeeper est le point d'entrée unique du clie
 ```
 
 **Réponse erreur – aucun serveur disponible (503) :**
+
 ```json
 { "error": "No server available" }
 ```
@@ -239,6 +251,7 @@ redis-cli HGETALL server:<uuid-retourné>
 ```
 
 Le test est réussi si :
+
 - La réponse du Gatekeeper contient un `ip` et un `port` valides.
 - Le TTL du serveur dans Redis se renouvelle toutes les 5 secondes grâce aux heartbeats.
 - Tuer un `dedicated_server` fait disparaître sa clé Redis après 15 secondes, et l'orchestrateur en spawne un nouveau.
@@ -288,19 +301,19 @@ pub struct ServerInfo {
 
 ## Dépendances Cargo suggérées
 
-| Crate | Usage |
-|---|---|
-| `bevy` 0.18 | Moteur ECS pour le Dedicated Server |
-| `game_sockets` | Abstraction réseau (voir cours) |
-| `tokio` (full) | Runtime async pour orchestrateur et gatekeeper |
-| `axum` | Framework REST pour le Gatekeeper |
-| `rocket` | Framework REST pour le Gatekeeper |
-| `redis` | Client Redis (orchestrateur et gatekeeper) |
-| `deadpool-redis` | Pool de connexions Redis pour Axum |
-| `serde` + `serde_json` | Sérialisation JSON |
-| `uuid` | Génération d'identifiants uniques |
-| `tracing` + `tracing-subscriber` | Logs structurés |
-| `anyhow` + `thiserror` | Logs structurés |
+| Crate                            | Usage                                          |
+|----------------------------------|------------------------------------------------|
+| `bevy` 0.18                      | Moteur ECS pour le Dedicated Server            |
+| `game_sockets`                   | Abstraction réseau (voir cours)                |
+| `tokio` (full)                   | Runtime async pour orchestrateur et gatekeeper |
+| `axum`                           | Framework REST pour le Gatekeeper              |
+| `rocket`                         | Framework REST pour le Gatekeeper              |
+| `redis`                          | Client Redis (orchestrateur et gatekeeper)     |
+| `deadpool-redis`                 | Pool de connexions Redis pour Axum             |
+| `serde` + `serde_json`           | Sérialisation JSON                             |
+| `uuid`                           | Génération d'identifiants uniques              |
+| `tracing` + `tracing-subscriber` | Logs structurés                                |
+| `anyhow` + `thiserror`           | Logs structurés                                |
 
 ---
 

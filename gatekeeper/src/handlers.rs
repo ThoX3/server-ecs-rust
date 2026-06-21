@@ -1,10 +1,10 @@
-use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use std::sync::Arc;
-use shared::ServerInfo;
 use crate::AppState;
 use axum::http::StatusCode;
+use axum::{extract::State, Json};
+use serde::{Deserialize, Serialize};
+use shared::ServerInfo;
+use std::sync::Arc;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct LoginRequest {

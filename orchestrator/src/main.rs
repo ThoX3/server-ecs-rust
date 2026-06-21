@@ -1,13 +1,13 @@
+use shared::logger::{error, info, warn};
 use shared::Heartbeat;
+use std::collections::HashMap;
 use std::env;
 use std::io;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::net::UdpSocket;
 use tokio::sync::Mutex;
-use std::collections::HashMap;
-use shared::logger::{info, warn, error};
 use tokio::time::{interval, Duration};
-use std::time::Instant;
 
 const TTL_SECONDS: u64 = 15; // Temps avant qu'un serveur soit considéré comme mort
 const SCALER_INTERVAL: u64 = 5; // Fréquence de vérification de la flotte (en secondes)
@@ -31,7 +31,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", orch_port)).await?);
     info!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
-    
+
     // Register the orchestrator_commands topic with the broker
     let broker_addr = env::var("BROKER_ADDR").unwrap_or_else(|_| "127.0.0.1:9000".to_string());
     let mut reg_msg = [0u8; 33];
@@ -81,7 +81,7 @@ async fn heartbeat_listener(
     loop {
         let (len, _sender_addr) = socket.recv_from(&mut buf).await?;
         if len == 0 { continue; }
-        
+
         if buf[0] == 0x13 && len >= 21 {
             // ScaleUp
             let parent = u32::from_le_bytes(buf[1..5].try_into().unwrap());
@@ -90,14 +90,35 @@ async fn heartbeat_listener(
             let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
             let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
             info!("Received ScaleUp instruction for shards {}, {}, {}, {}", s1, s2, s3, s4);
-            
-            let port = find_free_port().unwrap_or(7100);
-            match spawn_server(port, vec![s1, s2, s3, s4]) {
-                Ok(child) => {
-                    let mut procs = processes.lock().await;
-                    procs.insert(s1, child);
+
+            let pack_server_id = {
+                let fleet_lock = fleet.lock().await;
+                fleet_lock.iter().find(|(_, state)| state.heartbeat.player_count < 128).map(|(id, _)| id.clone())
+            };
+
+            if let Some(target_server_id) = pack_server_id {
+                info!("Packing new shards into existing server {}", target_server_id);
+                let mut topic = [0u8; 32];
+                topic[..target_server_id.len()].copy_from_slice(target_server_id.as_bytes());
+                let mut msg = vec![0x08];
+                msg.extend_from_slice(&topic);
+                msg.push(0x18);
+                msg.extend_from_slice(&4u32.to_le_bytes());
+                msg.extend_from_slice(&s1.to_le_bytes());
+                msg.extend_from_slice(&s2.to_le_bytes());
+                msg.extend_from_slice(&s3.to_le_bytes());
+                msg.extend_from_slice(&s4.to_le_bytes());
+                let broker_addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+                let _ = socket.send_to(&msg, broker_addr).await;
+            } else {
+                let port = find_free_port().unwrap_or(7100);
+                match spawn_server(port, vec![s1, s2, s3, s4], Some(parent)) {
+                    Ok(child) => {
+                        let mut procs = processes.lock().await;
+                        procs.insert(s1, child);
+                    }
+                    Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
                 }
-                Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
             }
             continue;
         } else if buf[0] == 0x15 && len >= 21 {
@@ -108,17 +129,29 @@ async fn heartbeat_listener(
             let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
             let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
             info!("Received ScaleDown instruction. Merging shards {}, {}, {}, {} into parent {}", s1, s2, s3, s4, parent);
-            
+
             {
                 let mut procs = processes.lock().await;
                 if let Some(mut child) = procs.remove(&s1) {
-                    info!("Killing dedicated server process for child shards.");
-                    let _ = child.kill();
+                    let mut topic = [0u8; 32];
+                    let shard_str = format!("shard:{}", s1);
+                    topic[..shard_str.len()].copy_from_slice(shard_str.as_bytes());
+                    let mut msg = vec![0x08];
+                    msg.extend_from_slice(&topic);
+                    msg.push(0x17);
+                    let broker_addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+                    let _ = socket.send_to(&msg, broker_addr).await;
+                    info!("Sent Graceful Shutdown command to {} child process.", shard_str);
+
+                    // Spawn a task to wait for the child process so it doesn't become a zombie
+                    tokio::spawn(async move {
+                        let _ = child.wait();
+                    });
                 }
             }
 
             let port = find_free_port().unwrap_or(7100);
-            match spawn_server(port, vec![parent]) {
+            match spawn_server(port, vec![parent], None) {
                 Ok(child) => {
                     let mut procs = processes.lock().await;
                     procs.insert(parent, child);
@@ -155,14 +188,42 @@ async fn scaler_loop(fleet: Arc<Mutex<HashMap<String, ServerState>>>) -> Result<
         let available_count = {
             let mut fleet_lock = fleet.lock().await;
             let now = Instant::now();
+
+            let mut orphaned_shards = Vec::new();
+
             // Prune dead servers
-            fleet_lock.retain(|_, state| now.duration_since(state.last_seen).as_secs() < TTL_SECONDS);
-            
+            fleet_lock.retain(|_, state| {
+                if now.duration_since(state.last_seen).as_secs() < TTL_SECONDS {
+                    true
+                } else {
+                    orphaned_shards.extend(state.heartbeat.shards.clone());
+                    false
+                }
+            });
+
+            if !orphaned_shards.is_empty() {
+                let mut topic = [0u8; 32];
+                let bytes = b"spatial_updates";
+                topic[..bytes.len()].copy_from_slice(bytes);
+                let mut msg = vec![0x08];
+                msg.extend_from_slice(&topic);
+                msg.push(0x19);
+                let count = orphaned_shards.len() as u32;
+                msg.extend_from_slice(&count.to_le_bytes());
+                for s in &orphaned_shards {
+                    msg.extend_from_slice(&s.to_le_bytes());
+                }
+                let local_socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
+                let broker_addr: std::net::SocketAddr = "127.0.0.1:9000".parse().unwrap();
+                let _ = local_socket.send_to(&msg, broker_addr).await;
+                error!("Detected Server Crash! Sent 0x19 ServerCrash for shards: {:?}", orphaned_shards);
+            }
+
             fleet_lock.values()
                 .filter(|state| state.heartbeat.player_count < state.heartbeat.max_players)
                 .count()
         };
-        
+
         let hot_min: usize = std::env::var("HOT_SERVERS_MIN")
             .unwrap_or_else(|_| "2".to_string())
             .parse()
@@ -178,7 +239,7 @@ async fn scaler_loop(fleet: Arc<Mutex<HashMap<String, ServerState>>>) -> Result<
                 let port = next_port_to_use;
                 next_port_to_use += 1;
 
-                if let Err(e) = spawn_server(port, vec![0]) {
+                if let Err(e) = spawn_server(port, vec![0], None) {
                     error!("Impossible de spawner le serveur sur le port {}: {:?}", port, e);
                 }
             }
@@ -195,7 +256,7 @@ fn find_free_port() -> Option<u16> {
     None
 }
 
-fn spawn_server(port: u16, shards: Vec<u32>) -> io::Result<std::process::Child> {
+fn spawn_server(port: u16, shards: Vec<u32>, parent: Option<u32>) -> io::Result<std::process::Child> {
     let ds_path = env::var("DS_BINARY_PATH").unwrap_or_else(|_| "cargo".to_string());
 
     let mut cmd = std::process::Command::new(&ds_path);
@@ -207,9 +268,12 @@ fn spawn_server(port: u16, shards: Vec<u32>) -> io::Result<std::process::Child> 
     let shards_str = shards.iter().map(|s| format!("shard:{}", s)).collect::<Vec<_>>().join(",");
     info!("Spawning server on port {} managing shards: {}", port, shards_str);
 
-    let child = cmd.env("DS_PORT", port.to_string())
-       .env("SHARDS", shards_str)
-       .spawn()?;
+    cmd.env("DS_PORT", port.to_string())
+        .env("SHARDS", shards_str);
 
-    Ok(child)
+    if let Some(p) = parent {
+        cmd.env("PARENT_SHARD", format!("shard:{}", p));
+    }
+
+    Ok(cmd.spawn()?)
 }

@@ -11,6 +11,7 @@ pub struct Heartbeat {
     pub zone: String,
     pub player_count: usize,
     pub max_players: usize,
+    pub shards: Vec<u32>,
     pub status: String,
 }
 

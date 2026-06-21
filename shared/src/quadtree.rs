@@ -204,6 +204,44 @@ impl QuadTree {
         }
         None
     }
+
+    pub fn force_collapse_if_contains(&mut self, crashed_shards: &[u32]) -> bool {
+        if let Some(children) = &mut self.children {
+            let mut collapse = false;
+            for child in children.iter_mut() {
+                if child.force_collapse_if_contains(crashed_shards) {
+                    collapse = true;
+                }
+                if let Some(id) = child.shard_id {
+                    if crashed_shards.contains(&id) {
+                        collapse = true;
+                    }
+                }
+            }
+
+            if collapse {
+                self.children = None;
+                return true;
+            }
+        }
+        false
+    }
+
+    pub fn find_parent_of(&self, target_shard: u32) -> Option<u32> {
+        if let Some(children) = &self.children {
+            for child in children.iter() {
+                if let Some(id) = child.shard_id {
+                    if id == target_shard {
+                        return self.shard_id;
+                    }
+                }
+                if let Some(parent) = child.find_parent_of(target_shard) {
+                    return Some(parent);
+                }
+            }
+        }
+        None
+    }
 }
 
 fn rects_overlap(r1: Rect, r2: Rect) -> bool {
@@ -236,10 +274,39 @@ impl SpatialService {
         }
     }
 
+    pub fn handle_server_crash(&mut self, crashed_shards: &[u32]) -> Vec<SpatialAction> {
+        let mut actions = Vec::new();
+
+        self.quadtree.force_collapse_if_contains(crashed_shards);
+
+        for (client_id, primary) in self.client_primary_shard.iter_mut() {
+            if crashed_shards.contains(primary) {
+                let mut new_shard = 0;
+                if let Some(parent) = self.quadtree.find_parent_of(*primary) {
+                    new_shard = parent;
+                }
+
+                actions.push(SpatialAction::AuthorityChange {
+                    client_id: *client_id,
+                    old_shard: *primary,
+                    new_shard,
+                });
+                *primary = new_shard;
+            }
+        }
+
+        for s in crashed_shards {
+            self.pending_splits.remove(s);
+            self.pending_merges.remove(s);
+        }
+
+        actions
+    }
+
     pub fn handle_position_update(
         &mut self,
         update: &PositionUpdate,
-        pending_ready: &std::collections::HashMap<u32, u32>
+        pending_ready: &std::collections::HashMap<u32, u32>,
     ) -> Vec<SpatialAction> {
         let mut actions = Vec::new();
         let pos = Vec2::new(update.x, update.y);
@@ -355,7 +422,7 @@ impl SpatialService {
                 old_shards,
             });
         }
-        
+
         actions
     }
 }
