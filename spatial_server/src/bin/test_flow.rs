@@ -109,7 +109,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut joined = false;
     for _ in 0..100 {
         client_a.move_to(0.0, 0.0).await;
-        if let Some(data) = client_a.wait_for_tag(0x04, 1).await {
+        if let Some(_data) = client_a.wait_for_tag(0x04, 1).await {
             info!("[SUCCESS] Client A received initial Broadcast! Joined shard 0.");
             joined = true;
             break;

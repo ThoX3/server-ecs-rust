@@ -43,8 +43,8 @@ fn get_zone_for_ip(ip: &str) -> String {
 }
 
 pub async fn login_handler(
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(_addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(_state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Validate credentials and route to a server.
