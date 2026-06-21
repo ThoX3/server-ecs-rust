@@ -24,38 +24,14 @@ pub struct PlayerInput {
 #[derive(Resource)]
 pub struct PlayerCount(pub Arc<AtomicUsize>);
 
-#[derive(Resource)]
-pub struct InterShardSocket(pub StdUdpSocket);
-
 #[derive(Component, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct NetworkId(pub u32);
 
 #[derive(Component, PartialEq, Eq, Debug)]
 pub enum Authority {
     Owned,
-    PendingHandoff { target_shard_addr: SocketAddr },
-    Ghost { source_shard_addr: SocketAddr },
+    Ghost,
 }
-
-#[derive(Component, Default)]
-pub struct HandoffTickCount(pub u32);
-
-pub const HANDOFF_STABILIZE_TICKS: u32 = 5;
-
-pub struct CrossingAlert {
-    pub entity_id: u32,
-    pub target_shard: SocketAddr,
-}
-
-#[derive(Resource, Default)]
-pub struct CrossingAlertQueue(pub Vec<CrossingAlert>);
-
-pub struct HandoffCompleteTrigger {
-    pub entity_id: u32,
-}
-
-#[derive(Resource, Default)]
-pub struct HandoffCompleteQueue(pub Vec<HandoffCompleteTrigger>);
 
 pub fn main() {
     // Start the dedicated server.
@@ -95,19 +71,11 @@ pub fn main() {
         .insert_resource(PlayerRegistry::default())
         .insert_resource(ServerNetwork(socket))
         .insert_resource(PlayerCount(player_count))
-        .insert_resource(InterShardSocket(inter_socket))
-        .init_resource::<CrossingAlertQueue>()
-        .init_resource::<HandoffCompleteQueue>()
         .add_systems(
             Update,
             (
                 handle_networks,
                 move_players,
-                initiate_handoff_system,
-                handle_inter_shard_messages,
-                sync_ghosts_system,
-                check_handoff_stable_system,
-                finalize_handoff_system,
             )
                 .chain(),
         )
@@ -119,27 +87,51 @@ fn handle_networks(
     network: Res<ServerNetwork>,
     mut registry: ResMut<PlayerRegistry>,
     count: Res<PlayerCount>,
+    mut transforms: Query<(&mut Transform, &Authority)>,
+    config: Res<ServerConfig>,
 ) {
     let mut buf = [0u8; 2048];
     while let Ok((amt, _src)) = network.0.recv_from(&mut buf) {
-        if amt < 1 {
-            continue;
-        }
+        if amt < 1 { continue; }
 
         let tag = buf[0];
         if tag == 0x05 {
             // Client Input routed by broker: 0x05 | client_id(4) | payload
-            if amt < 5 {
-                continue;
-            }
+            if amt < 5 { continue; }
             let client_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
             let payload = &buf[5..amt];
 
-            // Ignore 0x10 Position Updates routed to the shard.
-            // These are meant for the Spatial Server, but because we are subscribed to
-            // the same Broker inputs, we might receive them.
+            // If it is a 0x10 Position Update, sync it if the entity is a Ghost
             if payload.len() > 0 && payload[0] == 0x10 {
-                continue;
+                if payload.len() >= 9 {
+                    let x = f32::from_le_bytes(payload[1..5].try_into().unwrap());
+                    let y = f32::from_le_bytes(payload[5..9].try_into().unwrap());
+
+                    if let Some(&player_entity) = registry.players.get(&client_id) {
+                        if let Ok((mut transform, authority)) = transforms.get_mut(player_entity) {
+                            if *authority == Authority::Ghost {
+                                transform.translation.x = x;
+                                transform.translation.y = y;
+                            }
+                        }
+                    } else {
+                        // Unknown client routing us a position update? They must have entered our ghost margin!
+                        let string_id = Uuid::new_v4().to_string();
+                        let entity = commands
+                            .spawn((
+                                Player { id: string_id.clone() },
+                                Transform::from_xyz(x, y, 0.0),
+                                PlayerInput { movement_x: 0.0, movement_y: 0.0 },
+                                NetworkId(client_id),
+                                Authority::Ghost,
+                            ))
+                            .id();
+                        registry.players.insert(client_id, entity);
+                        count.0.fetch_add(1, Ordering::Relaxed);
+                        // println!("Spawned Ghost for entering client {}", client_id);
+                    }
+                }
+                continue; // Position Update handled
             }
 
             if let Some(&player_entity) = registry.players.get(&client_id) {
@@ -153,17 +145,11 @@ fn handle_networks(
                 let string_id = Uuid::new_v4().to_string();
                 let entity = commands
                     .spawn((
-                        Player {
-                            id: string_id.clone(),
-                        },
+                        Player { id: string_id.clone() },
                         Transform::default(),
-                        PlayerInput {
-                            movement_x: 0.0,
-                            movement_y: 0.0,
-                        },
+                        PlayerInput { movement_x: 0.0, movement_y: 0.0 },
                         NetworkId(client_id),
                         Authority::Owned,
-                        HandoffTickCount::default(),
                     ))
                     .id();
 
@@ -173,14 +159,33 @@ fn handle_networks(
             }
         } else if tag == 0x07 {
             // Disconnect packet from Broker
-            if amt < 5 {
-                continue;
-            }
+            if amt < 5 { continue; }
             let client_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
             if let Some(entity) = registry.players.remove(&client_id) {
                 commands.entity(entity).despawn();
                 count.0.fetch_sub(1, Ordering::Relaxed);
                 println!("Client {} disconnected from shard", client_id);
+            }
+        } else if tag == 0x12 {
+            // AuthorityChange: 0x12 | client_id(4) | old_shard(4) | new_shard(4)
+            if amt < 13 { continue; }
+            let client_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let old_shard = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+            let new_shard = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+
+            let hosts_old = config.shards.contains(&format!("shard:{}", old_shard));
+            let hosts_new = config.shards.contains(&format!("shard:{}", new_shard));
+
+            if let Some(&player_entity) = registry.players.get(&client_id) {
+                if let Ok(mut entity_commands) = commands.get_entity(player_entity) {
+                    if hosts_old && !hosts_new {
+                        entity_commands.insert(Authority::Ghost);
+                        println!("Client {} demoted to Ghost on Shard {}", client_id, old_shard);
+                    } else if hosts_new {
+                        entity_commands.insert(Authority::Owned);
+                        println!("Client {} promoted to Owned on Shard {}", client_id, new_shard);
+                    }
+                }
             }
         }
     }
@@ -224,224 +229,6 @@ fn move_players(
             let speed = 5.0;
             transform.translation.x += input.movement_x * speed * time.delta_secs();
             transform.translation.y += input.movement_y * speed * time.delta_secs();
-        }
-    }
-}
-
-pub fn initiate_handoff_system(
-    mut queue: ResMut<CrossingAlertQueue>,
-    mut query: Query<(&mut Authority, &Transform, &PlayerInput, &NetworkId)>,
-    socket: Res<InterShardSocket>,
-) {
-    for alert in queue.0.drain(..) {
-        for (mut authority, transform, input, net_id) in query.iter_mut() {
-            if net_id.0 == alert.entity_id && *authority == Authority::Owned {
-                println!("Initiation du Handoff pour {}", net_id.0);
-
-                *authority = Authority::PendingHandoff {
-                    target_shard_addr: alert.target_shard,
-                };
-
-                let mut buf = [0u8; 85];
-                buf[0] = 0x20;
-                buf[1..5].copy_from_slice(&net_id.0.to_le_bytes());
-                buf[5..9].copy_from_slice(&transform.translation.x.to_le_bytes());
-                buf[9..13].copy_from_slice(&transform.translation.y.to_le_bytes());
-                buf[13..17].copy_from_slice(&input.movement_x.to_le_bytes());
-                buf[17..21].copy_from_slice(&input.movement_y.to_le_bytes());
-
-                let _ = socket.0.send_to(&buf, alert.target_shard);
-            }
-        }
-    }
-}
-
-pub fn sync_ghosts_system(
-    query: Query<(&Authority, &Transform, &PlayerInput, &NetworkId)>,
-    socket: Res<InterShardSocket>,
-) {
-    for (authority, transform, input, net_id) in query.iter() {
-        if let Authority::PendingHandoff { target_shard_addr } = authority {
-            // Tag 0x23 : GhostUpdate
-            // entity_id: u32 (4) | pos: Vec2 (8) | vel: Vec2 (8) = 1 + 4 + 8 + 8 = 21 octets
-            let mut buf = [0u8; 21];
-            buf[0] = 0x23;
-            buf[1..5].copy_from_slice(&net_id.0.to_le_bytes());
-            buf[5..9].copy_from_slice(&transform.translation.x.to_le_bytes());
-            buf[9..13].copy_from_slice(&transform.translation.y.to_le_bytes());
-            buf[13..17].copy_from_slice(&input.movement_x.to_le_bytes());
-            buf[17..21].copy_from_slice(&input.movement_y.to_le_bytes());
-
-            let _ = socket.0.send_to(&buf, target_shard_addr);
-        }
-    }
-}
-
-pub fn handle_inter_shard_messages(
-    mut commands: Commands,
-    socket: Res<InterShardSocket>,
-    mut query: Query<(
-        Entity,
-        &NetworkId,
-        &mut Authority,
-        &mut Transform,
-        &mut PlayerInput,
-        Option<&mut HandoffTickCount>,
-    )>,
-) {
-    let mut buf = [0u8; 512];
-
-    while let Ok((amt, src)) = socket.0.recv_from(&mut buf) {
-        if amt < 5 {
-            continue;
-        }
-
-        let tag = buf[0];
-        let entity_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
-
-        match tag {
-            0x20 => {
-                // HandoffRequest reçu
-                if amt >= 85 {
-                    let pos_x = f32::from_le_bytes(buf[5..9].try_into().unwrap());
-                    let pos_y = f32::from_le_bytes(buf[9..13].try_into().unwrap());
-                    let vel_x = f32::from_le_bytes(buf[13..17].try_into().unwrap());
-                    let vel_y = f32::from_le_bytes(buf[17..21].try_into().unwrap());
-
-                    let already_exists = query
-                        .iter()
-                        .any(|(_, net_id, _, _, _, _)| net_id.0 == entity_id);
-
-                    if already_exists {
-                        // Tag 0x22 : HandoffReject
-                        let mut reject_buf = [0u8; 5];
-                        reject_buf[0] = 0x22;
-                        reject_buf[1..5].copy_from_slice(&entity_id.to_le_bytes());
-                        let _ = socket.0.send_to(&reject_buf, src);
-                    } else {
-                        commands.spawn((
-                            Player {
-                                id: entity_id.to_string(),
-                            },
-                            PlayerInput {
-                                movement_x: vel_x,
-                                movement_y: vel_y,
-                            },
-                            NetworkId(entity_id),
-                            Transform::from_xyz(pos_x, pos_y, 0.0),
-                            Authority::Ghost {
-                                source_shard_addr: src,
-                            },
-                            HandoffTickCount::default(),
-                        ));
-
-                        // Tag 0x21 : HandoffAccept
-                        let mut accept_buf = [0u8; 5];
-                        accept_buf[0] = 0x21;
-                        accept_buf[1..5].copy_from_slice(&entity_id.to_le_bytes());
-                        let _ = socket.0.send_to(&accept_buf, src);
-
-                        println!("Ghost spawn pour {} (handoff accepté)", entity_id);
-                    }
-                }
-            }
-            0x21 => {
-                // HandoffAccept reçu côté source : le shard destination a bien
-                // spawn le Ghost.
-                println!("HandoffAccept reçu pour {}", entity_id);
-            }
-            0x22 => {
-                // HandoffReject : le shard destination a refusé le transfert.
-                // L'entité reprend l'autorité complète et rebondit sur la frontière.
-                for (_, net_id, mut authority, _, mut input, _) in query.iter_mut() {
-                    if net_id.0 == entity_id {
-                        *authority = Authority::Owned;
-                        input.movement_x *= -1.0;
-                        input.movement_y *= -1.0;
-                        println!("HandoffReject pour {} : rebond sur la frontière", entity_id);
-                    }
-                }
-            }
-            0x23 => {
-                // GhostUpdate reçu côté destination : on met à jour la copie locale
-                // du Ghost et on incrémente son compteur de synchronisation.
-                if amt >= 21 {
-                    let pos_x = f32::from_le_bytes(buf[5..9].try_into().unwrap());
-                    let pos_y = f32::from_le_bytes(buf[9..13].try_into().unwrap());
-                    let vel_x = f32::from_le_bytes(buf[13..17].try_into().unwrap());
-                    let vel_y = f32::from_le_bytes(buf[17..21].try_into().unwrap());
-
-                    for (_, net_id, authority, mut transform, mut input, sync_count) in
-                        query.iter_mut()
-                    {
-                        if net_id.0 == entity_id && matches!(*authority, Authority::Ghost { .. }) {
-                            transform.translation.x = pos_x;
-                            transform.translation.y = pos_y;
-                            input.movement_x = vel_x;
-                            input.movement_y = vel_y;
-
-                            if let Some(mut count) = sync_count {
-                                count.0 += 1;
-                            }
-                        }
-                    }
-                }
-            }
-            0x24 => {
-                // HandoffComplete reçu côté destination : on prend l'autorité
-                // complète sur le Ghost, qui devient Owned.
-                for (_, net_id, mut authority, _, _, sync_count) in query.iter_mut() {
-                    if net_id.0 == entity_id && matches!(*authority, Authority::Ghost { .. }) {
-                        *authority = Authority::Owned;
-                        if let Some(mut count) = sync_count {
-                            count.0 = 0;
-                        }
-                        println!("HandoffComplete pour {} : autorité prise", entity_id);
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-}
-
-pub fn check_handoff_stable_system(
-    mut complete_queue: ResMut<HandoffCompleteQueue>,
-    mut query: Query<(&mut Authority, &NetworkId, &mut HandoffTickCount)>,
-) {
-    for (authority, net_id, mut tick_count) in query.iter_mut() {
-        if let Authority::PendingHandoff { .. } = *authority {
-            tick_count.0 += 1;
-            if tick_count.0 >= HANDOFF_STABILIZE_TICKS {
-                complete_queue.0.push(HandoffCompleteTrigger {
-                    entity_id: net_id.0,
-                });
-            }
-        }
-    }
-}
-
-pub fn finalize_handoff_system(
-    mut queue: ResMut<HandoffCompleteQueue>,
-    mut commands: Commands,
-    query: Query<(Entity, &Authority, &NetworkId)>,
-    socket: Res<InterShardSocket>,
-) {
-    for trigger in queue.0.drain(..) {
-        for (entity, authority, net_id) in query.iter() {
-            if net_id.0 == trigger.entity_id {
-                if let Authority::PendingHandoff { target_shard_addr } = authority {
-                    // Tag 0x24 : HandoffComplete
-                    let mut buf = [0u8; 5];
-                    buf[0] = 0x24;
-                    buf[1..5].copy_from_slice(&net_id.0.to_le_bytes());
-                    let _ = socket.0.send_to(&buf, *target_shard_addr);
-
-                    println!("HandoffComplete envoyé pour {} -> despawn local", net_id.0);
-
-                    commands.entity(entity).despawn();
-                }
-            }
         }
     }
 }

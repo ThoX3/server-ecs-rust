@@ -81,6 +81,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             let _ = socket.send_to(&msg, &broker_addr).await;
                         }
+                        SpatialAction::AuthorityChange { client_id, old_shard, new_shard } => {
+                            // AuthorityChange: 0x12 | client_id(4) | old_shard(4) | new_shard(4)
+                            let mut msg = [0u8; 13];
+                            msg[0] = 0x12;
+                            msg[1..5].copy_from_slice(&client_id.to_le_bytes());
+                            msg[5..9].copy_from_slice(&old_shard.to_le_bytes());
+                            msg[9..13].copy_from_slice(&new_shard.to_le_bytes());
+                            let _ = socket.send_to(&msg, &broker_addr).await;
+                        }
                     }
                 }
             }
@@ -88,7 +97,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             // Disconnect: 0x07 | client_id(4)
             if len < 5 { continue; }
             let client_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
-            spatial_service.client_shards.remove(&client_id);
+            spatial_service.client_primary_shard.remove(&client_id);
+            spatial_service.client_subscribed_shards.remove(&client_id);
             println!("Client {} disconnected, removed from spatial tracking.", client_id);
         }
     }

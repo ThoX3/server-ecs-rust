@@ -13,6 +13,7 @@ pub enum SpatialAction {
     Subscribe { client_id: u32, topic: [u8; 32] },
     Unsubscribe { client_id: u32, topic: [u8; 32] },
     CrossingAlert { client_id: u32, shards: Vec<u32> },
+    AuthorityChange { client_id: u32, old_shard: u32, new_shard: u32 },
 }
 
 pub fn string_to_topic(s: &str) -> [u8; 32] {
@@ -145,7 +146,8 @@ fn rects_overlap(r1: Rect, r2: Rect) -> bool {
 pub struct SpatialService {
     pub quadtree: QuadTree,
     pub margin: f32,
-    pub client_shards: std::collections::HashMap<u32, u32>,
+    pub client_primary_shard: std::collections::HashMap<u32, u32>,
+    pub client_subscribed_shards: std::collections::HashMap<u32, Vec<u32>>,
 }
 
 impl SpatialService {
@@ -153,7 +155,8 @@ impl SpatialService {
         Self {
             quadtree,
             margin,
-            client_shards: std::collections::HashMap::new(),
+            client_primary_shard: std::collections::HashMap::new(),
+            client_subscribed_shards: std::collections::HashMap::new(),
         }
     }
 
@@ -162,29 +165,61 @@ impl SpatialService {
         let pos = Vec2::new(update.x, update.y);
 
         let new_shard_opt = self.quadtree.shard_for(pos);
-        if let Some(new_shard) = new_shard_opt {
-            let current_shard = self.client_shards.get(&update.client_id).copied();
+        if let Some(new_primary) = new_shard_opt {
+            let current_primary = self.client_primary_shard.get(&update.client_id).copied();
 
-            if current_shard != Some(new_shard) {
-                // Shard changed or new client
-                if let Some(old) = current_shard {
-                    actions.push(SpatialAction::Unsubscribe {
+            if current_primary != Some(new_primary) {
+                if let Some(old) = current_primary {
+                    actions.push(SpatialAction::AuthorityChange {
                         client_id: update.client_id,
-                        topic: string_to_topic(&format!("shard:{}", old)),
+                        old_shard: old,
+                        new_shard: new_primary,
                     });
                 }
-
-                actions.push(SpatialAction::Subscribe {
-                    client_id: update.client_id,
-                    topic: string_to_topic(&format!("shard:{}", new_shard)),
-                });
-
-                self.client_shards.insert(update.client_id, new_shard);
+                self.client_primary_shard.insert(update.client_id, new_primary);
             }
         }
 
-        // Check if near multiple shards
-        let near = self.quadtree.shards_near(pos, self.margin);
+        // Check overlapping shards in the margin
+        let mut near = self.quadtree.shards_near(pos, self.margin);
+        if let Some(primary) = new_shard_opt {
+            if !near.contains(&primary) {
+                near.push(primary);
+            }
+        }
+        near.sort_unstable();
+        near.dedup();
+
+        let currently_subscribed = self
+            .client_subscribed_shards
+            .get(&update.client_id)
+            .cloned()
+            .unwrap_or_default();
+
+        // New subscriptions
+        for &shard in &near {
+            if !currently_subscribed.contains(&shard) {
+                actions.push(SpatialAction::Subscribe {
+                    client_id: update.client_id,
+                    topic: string_to_topic(&format!("shard:{}", shard)),
+                });
+            }
+        }
+
+        // Unsubscriptions
+        for &shard in &currently_subscribed {
+            if !near.contains(&shard) {
+                actions.push(SpatialAction::Unsubscribe {
+                    client_id: update.client_id,
+                    topic: string_to_topic(&format!("shard:{}", shard)),
+                });
+            }
+        }
+
+        self.client_subscribed_shards.insert(update.client_id, near.clone());
+
+        // Emit CrossingAlert if player is in the margin of multiple shards.
+        // We always emit it so the servers are aware of the proximity.
         if near.len() > 1 {
             actions.push(SpatialAction::CrossingAlert {
                 client_id: update.client_id,

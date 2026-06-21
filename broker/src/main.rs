@@ -50,6 +50,7 @@ fn main() -> std::io::Result<()> {
             0x06 => handle_register_shard(&mut state, payload, src),
             0x07 => handle_client_disconnect(&mut state, &socket, payload),
             0x11 => handle_crossing_alert(&mut state, &socket, payload),
+            0x12 => handle_authority_change(&mut state, &socket, payload),
             _ => eprintln!("Tag inconnu: 0x{:02X}", tag),
         }
     }
@@ -66,6 +67,24 @@ fn handle_crossing_alert(state: &mut BrokerState, socket: &UdpSocket, data: &[u8
         for topic in topics {
             if let Some(route) = state.routes.get(topic) {
                 let mut shard_msg = vec![0x11];
+                shard_msg.extend_from_slice(data);
+                let _ = socket.send_to(&shard_msg, route.authority_shard);
+            }
+        }
+    }
+}
+
+fn handle_authority_change(state: &mut BrokerState, socket: &UdpSocket, data: &[u8]) {
+    if data.len() < 12 {
+        return;
+    }
+    let client_id_bytes = data[0..4].try_into().unwrap();
+    let client_id = u32::from_le_bytes(client_id_bytes);
+
+    if let Some(topics) = state.client_to_topics.get(&client_id) {
+        for topic in topics {
+            if let Some(route) = state.routes.get(topic) {
+                let mut shard_msg = vec![0x12];
                 shard_msg.extend_from_slice(data);
                 let _ = socket.send_to(&shard_msg, route.authority_shard);
             }

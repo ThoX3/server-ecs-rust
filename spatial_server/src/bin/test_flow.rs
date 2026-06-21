@@ -7,7 +7,6 @@ use tokio::time::sleep;
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("\n=== Starting End-to-End Sharding Test Flow ===\n");
-
     // 1. Start Broker
     println!("[TEST] Spawning Broker at 0.0.0.0:9000...");
     let mut broker_process = Command::new("cargo")
@@ -149,6 +148,43 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     pos_msg3[10..14].copy_from_slice(&(500.0f32).to_le_bytes());
     client.send_to(&pos_msg3, "127.0.0.1:9000").await?;
     
+    // Listen for AuthorityChange (0x12) on both shards
+    let mut found_auth0 = false;
+    let start_time = tokio::time::Instant::now();
+    while start_time.elapsed() < Duration::from_secs(1) {
+        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(100), shard0.recv_from(&mut buf)).await {
+            if buf[0] == 0x12 {
+                let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+                let old_shard = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+                let new_shard = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+                println!("[SUCCESS] Shard 0 received Authority Change for client {}: {} -> {}", rec_client, old_shard, new_shard);
+                found_auth0 = true;
+                break;
+            }
+        }
+    }
+    if !found_auth0 {
+        println!("[ERROR] Shard 0 did not receive Authority Change!");
+    }
+
+    let mut found_auth1 = false;
+    let start_time = tokio::time::Instant::now();
+    while start_time.elapsed() < Duration::from_secs(1) {
+        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(100), shard1.recv_from(&mut buf)).await {
+            if buf[0] == 0x12 {
+                let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+                let old_shard = u32::from_le_bytes(buf[5..9].try_into().unwrap());
+                let new_shard = u32::from_le_bytes(buf[9..13].try_into().unwrap());
+                println!("[SUCCESS] Shard 1 received Authority Change for client {}: {} -> {}", rec_client, old_shard, new_shard);
+                found_auth1 = true;
+                break;
+            }
+        }
+    }
+    if !found_auth1 {
+        println!("[ERROR] Shard 1 did not receive Authority Change!");
+    }
+
     sleep(Duration::from_millis(500)).await;
 
     // --- STEP 5: Verify new routing ---
