@@ -18,14 +18,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     info!("Listening on port {}", port);
     info!("Broker address: {}", broker_addr);
     info!("Orchestrator address: {}", orch_addr);
-
     // Initialisation du QuadTree
     // Monde de -1000 à 1000
     let bounds = Rect::from_center_size(Vec2::ZERO, Vec2::new(2000.0, 2000.0));
-    let mut quadtree = QuadTree::new(bounds, 0, 2);
-    quadtree.split(); // split au moins une fois pour avoir 4 shards (0, 1, 2, 3)
-    let mut next_id = 0;
-    quadtree.assign_shards(&mut next_id);
+    let mut quadtree = QuadTree::new(bounds, 0, 4);
+    let mut next_id = 1; // Since root is 0, next is 1
 
     let mut spatial_service = SpatialService::new(quadtree, 50.0, next_id); // Margin de 50.0
 
@@ -110,9 +107,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let _ = socket.send_to(&msg, &broker_addr).await;
                         }
                         SpatialAction::ScaleUp { parent_shard, new_shards } => {
-                            // ScaleUp to Orchestrator: 0x13 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
+                            // ScaleUp to Orchestrator via Broker: 0x08 | orchestrator_commands(32) | 0x13 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
                             info!("Shard {} overpopulated! Requesting Orchestrator to ScaleUp new shards: {:?}", parent_shard, new_shards);
-                            let mut msg = vec![0x13];
+                            let mut msg = vec![0x08];
+                            let topic = b"orchestrator_commands";
+                            let mut t = [0u8; 32];
+                            t[..topic.len()].copy_from_slice(topic);
+                            msg.extend_from_slice(&t);
+                            msg.push(0x13);
                             msg.extend_from_slice(&parent_shard.to_le_bytes());
                             for ns in &new_shards {
                                 msg.extend_from_slice(&ns.to_le_bytes());
@@ -120,12 +122,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                             parent_to_children.insert(parent_shard, new_shards);
                             
-                            let _ = socket.send_to(&msg, &orch_addr).await;
+                            let _ = socket.send_to(&msg, &broker_addr).await;
                         }
                         SpatialAction::ScaleDown { parent_shard, old_shards } => {
-                            // ScaleDown to Orchestrator: 0x15 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
+                            // ScaleDown to Orchestrator via Broker: 0x08 | orchestrator_commands(32) | 0x15 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
                             info!("Shards {:?} underpopulated! Requesting Orchestrator to ScaleDown to parent: {}", old_shards, parent_shard);
-                            let mut msg = vec![0x15];
+                            let mut msg = vec![0x08];
+                            let topic = b"orchestrator_commands";
+                            let mut t = [0u8; 32];
+                            t[..topic.len()].copy_from_slice(topic);
+                            msg.extend_from_slice(&t);
+                            msg.push(0x15);
                             msg.extend_from_slice(&parent_shard.to_le_bytes());
                             for os in &old_shards {
                                 msg.extend_from_slice(&os.to_le_bytes());
@@ -135,7 +142,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             pending_ready.insert(parent_shard, parent_shard);
                             parent_to_children.insert(parent_shard, old_shards);
                             
-                            let _ = socket.send_to(&msg, &orch_addr).await;
+                            let _ = socket.send_to(&msg, &broker_addr).await;
                         }
                     }
                 }

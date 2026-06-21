@@ -42,8 +42,8 @@ impl QuadTree {
             bounds,
             depth,
             max_depth,
+            shard_id: Some(0), // The root starts as Shard 0
             children: None,
-            shard_id: None,
         }
     }
 

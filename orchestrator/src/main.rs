@@ -1,4 +1,3 @@
-use redis::AsyncCommands;
 use shared::Heartbeat;
 use std::env;
 use std::io;
@@ -8,11 +7,16 @@ use tokio::sync::Mutex;
 use std::collections::HashMap;
 use shared::logger::{info, warn, error};
 use tokio::time::{interval, Duration};
+use std::time::Instant;
 
 const TTL_SECONDS: u64 = 15; // Temps avant qu'un serveur soit considéré comme mort
 const SCALER_INTERVAL: u64 = 5; // Fréquence de vérification de la flotte (en secondes)
-const HOT_SERVERS_MIN: usize = 2; // Nombre minimal de serveurs vides requis
 const BASE_DS_PORT: u16 = 7001; // Port de départ pour attribuer aux nouveaux serveurs
+
+struct ServerState {
+    heartbeat: Heartbeat,
+    last_seen: Instant,
+}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -27,15 +31,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let socket = Arc::new(UdpSocket::bind(format!("0.0.0.0:{}", orch_port)).await?);
     info!("Orchestrateur à l'écoute sur le port UDP {}", orch_port);
+    
+    // Register the orchestrator_commands topic with the broker
+    let broker_addr = env::var("BROKER_ADDR").unwrap_or_else(|_| "127.0.0.1:9000".to_string());
+    let mut reg_msg = [0u8; 33];
+    reg_msg[0] = 0x06;
+    let topic_bytes = b"orchestrator_commands";
+    reg_msg[1..1 + topic_bytes.len()].copy_from_slice(topic_bytes);
+    let _ = socket.send_to(&reg_msg, broker_addr).await?;
+    info!("Registered orchestrator_commands authority with Broker.");
 
-    // Client Redis partagé entre les tâches
-    let redis_url = env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379/".to_string());
-    let redis_client_raw = redis::Client::open(redis_url)?;
-    let redis_client_shared = Arc::new(redis_client_raw);
+    // Fleet state
+    let fleet: Arc<Mutex<HashMap<String, ServerState>>> = Arc::new(Mutex::new(HashMap::new()));
+    let listener_fleet = fleet.clone();
 
     let listener_socket = socket.clone();
-
-    let listener_redis = redis_client_shared.clone();
 
     // Store server processes to allow killing them on ScaleDown
     let processes: Arc<Mutex<HashMap<u32, std::process::Child>>> = Arc::new(Mutex::new(HashMap::new()));
@@ -43,14 +53,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Listen for heartbeats.
     let heartbeat_handle = tokio::spawn(async move {
-        if let Err(e) = heartbeat_listener(listener_socket, listener_redis, listener_processes).await {
+        if let Err(e) = heartbeat_listener(listener_socket, listener_fleet, listener_processes).await {
             error!("Erreur dans la tâche heartbeat_listener: {:?}", e);
         }
     });
 
     // Monitor and scale the fleet.
     let scaler_handle = tokio::spawn(async move {
-        if let Err(e) = scaler_loop(redis_client_shared).await {
+        if let Err(e) = scaler_loop(fleet).await {
             error!("Erreur dans la tâche scaler_loop: {:?}", e);
         }
     });
@@ -62,185 +72,121 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn heartbeat_listener(
     socket: Arc<UdpSocket>,
-    redis_client: Arc<redis::Client>,
+    fleet: Arc<Mutex<HashMap<String, ServerState>>>,
     processes: Arc<Mutex<HashMap<u32, std::process::Child>>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Receive heartbeats and update Redis.
+    // Receive heartbeats and update in-memory fleet state.
     let mut buf = [0u8; 2048];
-    let mut con = redis_client.get_multiplexed_async_connection().await?;
 
     loop {
         let (len, _sender_addr) = socket.recv_from(&mut buf).await?;
         if len == 0 { continue; }
         
-        if buf[0] == 0x13 && len >= 21 {
-            // ScaleUp: 0x13 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
-            let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
-            let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
-            let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
-            let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
-            info!("Received ScaleUp instruction for shards {}, {}, {}, {}", s1, s2, s3, s4);
-            
-            // Find a port
-            let port = find_free_port().unwrap_or(7100);
-            match spawn_server(port, vec![s1, s2, s3, s4]) {
-                Ok(child) => {
+        if buf[0] == 0x08 && len >= 34 {
+            let tag = buf[32]; // The inner tag
+            if tag == 0x13 && len >= 53 {
+                // ScaleUp
+                let parent = u32::from_le_bytes(buf[33..37].try_into().unwrap());
+                let s1 = u32::from_le_bytes(buf[37..41].try_into().unwrap());
+                let s2 = u32::from_le_bytes(buf[41..45].try_into().unwrap());
+                let s3 = u32::from_le_bytes(buf[45..49].try_into().unwrap());
+                let s4 = u32::from_le_bytes(buf[49..53].try_into().unwrap());
+                info!("Received ScaleUp instruction for shards {}, {}, {}, {}", s1, s2, s3, s4);
+                
+                let port = find_free_port().unwrap_or(7100);
+                match spawn_server(port, vec![s1, s2, s3, s4]) {
+                    Ok(child) => {
+                        let mut procs = processes.lock().await;
+                        procs.insert(s1, child);
+                    }
+                    Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
+                }
+                continue;
+            } else if tag == 0x15 && len >= 53 {
+                // ScaleDown
+                let parent = u32::from_le_bytes(buf[33..37].try_into().unwrap());
+                let s1 = u32::from_le_bytes(buf[37..41].try_into().unwrap());
+                let s2 = u32::from_le_bytes(buf[41..45].try_into().unwrap());
+                let s3 = u32::from_le_bytes(buf[45..49].try_into().unwrap());
+                let s4 = u32::from_le_bytes(buf[49..53].try_into().unwrap());
+                info!("Received ScaleDown instruction. Merging shards {}, {}, {}, {} into parent {}", s1, s2, s3, s4, parent);
+                
+                {
                     let mut procs = processes.lock().await;
-                    procs.insert(s1, child);
-                    // Only need to map one of the shards to kill the process later
+                    if let Some(mut child) = procs.remove(&s1) {
+                        info!("Killing dedicated server process for child shards.");
+                        let _ = child.kill();
+                    }
                 }
-                Err(e) => error!("Failed to spawn server on port {}: {:?}", port, e),
-            }
-            continue;
-        }
 
-        if buf[0] == 0x15 && len >= 21 {
-            // ScaleDown: 0x15 | parent(4) | s1(4) | s2(4) | s3(4) | s4(4)
-            let parent = u32::from_le_bytes(buf[1..5].try_into().unwrap());
-            let s1 = u32::from_le_bytes(buf[5..9].try_into().unwrap());
-            let s2 = u32::from_le_bytes(buf[9..13].try_into().unwrap());
-            let s3 = u32::from_le_bytes(buf[13..17].try_into().unwrap());
-            let s4 = u32::from_le_bytes(buf[17..21].try_into().unwrap());
-            info!("Received ScaleDown instruction. Merging shards {}, {}, {}, {} into parent {}", s1, s2, s3, s4, parent);
-            
-            // Kill the old server that was managing these shards
-            {
-                let mut procs = processes.lock().await;
-                if let Some(mut child) = procs.remove(&s1) {
-                    info!("Killing dedicated server process for child shards.");
-                    let _ = child.kill();
+                let port = find_free_port().unwrap_or(7100);
+                match spawn_server(port, vec![parent]) {
+                    Ok(child) => {
+                        let mut procs = processes.lock().await;
+                        procs.insert(parent, child);
+                    }
+                    Err(e) => error!("Failed to spawn parent server on port {}: {:?}", port, e),
                 }
+                continue;
             }
-
-            // Spawn the parent server
-            let port = find_free_port().unwrap_or(7100);
-            match spawn_server(port, vec![parent]) {
-                Ok(child) => {
-                    let mut procs = processes.lock().await;
-                    procs.insert(parent, child);
-                }
-                Err(e) => error!("Failed to spawn parent server on port {}: {:?}", port, e),
-            }
-            continue;
         }
 
         if let Ok(hb) = serde_json::from_slice::<Heartbeat>(&buf[..len]) {
-            let redis_key = format!("server:{}", hb.id);
-
             let status = if hb.player_count >= hb.max_players {
                 "full"
             } else {
                 "available"
             };
 
-            let _: () = redis::pipe()
-                .atomic()
-                .hset(&redis_key, "id", &hb.id)
-                .hset(&redis_key, "ip", &hb.ip)
-                .hset(&redis_key, "port", hb.port)
-                .hset(&redis_key, "zone", &hb.zone)
-                .hset(&redis_key, "status", status)
-                .hset(&redis_key, "players", hb.player_count)
-                .expire(&redis_key, TTL_SECONDS as i64)
-                .query_async(&mut con)
-                .await?;
-
-            info!(
-                "Heartbeat traité pour le serveur {} (Statut: {})",
-                hb.id, status
-            );
+            info!("Heartbeat traité pour le serveur {} (Statut: {})", hb.id, status);
+            let mut fleet_lock = fleet.lock().await;
+            fleet_lock.insert(hb.id.clone(), ServerState {
+                heartbeat: hb,
+                last_seen: Instant::now(),
+            });
         }
     }
 }
 
-async fn scaler_loop(redis_client: Arc<redis::Client>) -> Result<(), Box<dyn std::error::Error>> {
-    // Periodically ensure the fleet size.
+async fn scaler_loop(fleet: Arc<Mutex<HashMap<String, ServerState>>>) -> Result<(), Box<dyn std::error::Error>> {
     let mut interval = interval(Duration::from_secs(SCALER_INTERVAL));
     let mut next_port_to_use = BASE_DS_PORT;
 
     loop {
         interval.tick().await;
 
-        match count_available_servers(redis_client.clone()).await {
-            Ok(available_count) => {
-                info!(
-                    "Flotte actuelle : {} serveurs disponibles (Requis minimum : {})",
-                    available_count, HOT_SERVERS_MIN
-                );
+        let available_count = {
+            let mut fleet_lock = fleet.lock().await;
+            let now = Instant::now();
+            // Prune dead servers
+            fleet_lock.retain(|_, state| now.duration_since(state.last_seen).as_secs() < TTL_SECONDS);
+            
+            fleet_lock.values()
+                .filter(|state| state.heartbeat.player_count < state.heartbeat.max_players)
+                .count()
+        };
+        
+        let hot_min: usize = std::env::var("HOT_SERVERS_MIN")
+            .unwrap_or_else(|_| "2".to_string())
+            .parse()
+            .unwrap_or(2);
 
-                if available_count < HOT_SERVERS_MIN {
-                    let needed = HOT_SERVERS_MIN - available_count;
-                    warn!(
-                        "Alerte sous-effectif ! Lancement de {} serveur(s) dédié(s)...",
-                        needed
-                    );
+        info!("Flotte actuelle : {} serveurs disponibles (Requis minimum : {})", available_count, hot_min);
 
-                    for _ in 0..needed {
-                        let port = next_port_to_use;
-                        next_port_to_use += 1;
+        if available_count < hot_min {
+            let needed = hot_min - available_count;
+            warn!("Alerte sous-effectif ! Lancement de {} serveur(s) dédié(s)...", needed);
 
-                        // Spawn a basic server for shard:0 as fallback
-                        if let Err(e) = spawn_server(port, vec![0]) {
-                            error!(
-                                "Impossible de spawner le serveur sur le port {}: {:?}",
-                                port, e
-                            );
-                        }
-                    }
-                }
-            }
-            Err(e) => error!("Erreur lors du calcul de la flotte dans Redis : {:?}", e),
-        }
-    }
-}
+            for _ in 0..needed {
+                let port = next_port_to_use;
+                next_port_to_use += 1;
 
-async fn count_available_servers(
-    redis_client: Arc<redis::Client>,
-) -> Result<usize, redis::RedisError> {
-    // Count available servers in Redis.
-    let mut con = redis_client.get_multiplexed_async_connection().await?;
-    let mut available_count = 0;
-
-    let mut cmd = redis::cmd("SCAN");
-    cmd.arg(0)
-        .arg("MATCH")
-        .arg("server:*")
-        .arg("COUNT")
-        .arg(100);
-
-    let (mut cursor, keys): (u64, Vec<String>) = cmd.query_async(&mut con).await?;
-
-    for key in &keys {
-        let status: Option<String> = con.hget(key, "status").await?;
-        if let Some(s) = status {
-            if s == "available" {
-                available_count += 1;
-            }
-        }
-    }
-
-    while cursor != 0 {
-        let mut next_cmd = redis::cmd("SCAN");
-        next_cmd
-            .arg(cursor)
-            .arg("MATCH")
-            .arg("server:*")
-            .arg("COUNT")
-            .arg(100);
-        let (next_cursor, next_keys): (u64, Vec<String>) = next_cmd.query_async(&mut con).await?;
-        cursor = next_cursor;
-
-        for key in &next_keys {
-            let status: Option<String> = con.hget(key, "status").await?;
-            if let Some(s) = status {
-                if s == "available" {
-                    available_count += 1;
+                if let Err(e) = spawn_server(port, vec![0]) {
+                    error!("Impossible de spawner le serveur sur le port {}: {:?}", port, e);
                 }
             }
         }
     }
-
-    Ok(available_count)
 }
 
 fn find_free_port() -> Option<u16> {

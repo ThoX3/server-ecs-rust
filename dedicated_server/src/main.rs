@@ -89,6 +89,7 @@ pub fn main() {
             (
                 handle_networks,
                 move_players,
+                broadcast_state,
             )
                 .chain(),
         )
@@ -206,7 +207,7 @@ fn handle_networks(
 
 async fn heartbeat_task(config: ServerConfig, current_players: Arc<AtomicUsize>) {
     let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await.unwrap();
-    let mut ticker = interval(Duration::from_secs(5));
+    let mut ticker = interval(Duration::from_secs(2));
 
     loop {
         ticker.tick().await;
@@ -228,7 +229,7 @@ async fn heartbeat_task(config: ServerConfig, current_players: Arc<AtomicUsize>)
         };
 
         if let Ok(bytes) = serde_json::to_vec(&hb) {
-            let _ = socket.send_to(&bytes, config.orchestrator_addr);
+            let _ = socket.send_to(&bytes, config.orchestrator_addr).await;
         }
     }
 }
@@ -243,5 +244,45 @@ fn move_players(
             transform.translation.x += input.movement_x * speed * time.delta_secs();
             transform.translation.y += input.movement_y * speed * time.delta_secs();
         }
+    }
+}
+
+fn broadcast_state(
+    query: Query<(&NetworkId, &Transform), With<Player>>,
+    network: Res<ServerNetwork>,
+    config: Res<ServerConfig>,
+) {
+    if query.is_empty() {
+        return;
+    }
+
+    // Prepare a game data payload
+    // Format: Number of players (1 byte) | [client_id (4 bytes) | x (4 bytes) | y (4 bytes)] * N
+    let mut payload = vec![];
+    let mut count = 0u8;
+    for (net_id, transform) in query.iter() {
+        if count >= 255 { break; }
+        count += 1;
+        payload.extend_from_slice(&net_id.0.to_le_bytes());
+        payload.extend_from_slice(&transform.translation.x.to_le_bytes());
+        payload.extend_from_slice(&transform.translation.y.to_le_bytes());
+    }
+    
+    let mut game_data = vec![count];
+    game_data.extend(payload);
+
+    // Send 0x03 Publish for each shard authority
+    for shard in &config.shards {
+        let mut msg = vec![0x03];
+        let mut topic = [0u8; 32];
+        let bytes = shard.as_bytes();
+        topic[..bytes.len()].copy_from_slice(bytes);
+        
+        msg.extend_from_slice(&topic);
+        let payload_len = game_data.len() as u16;
+        msg.extend_from_slice(&payload_len.to_le_bytes());
+        msg.extend_from_slice(&game_data);
+
+        let _ = network.0.send_to(&msg, config.broker_addr);
     }
 }

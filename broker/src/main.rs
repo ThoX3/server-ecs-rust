@@ -51,11 +51,27 @@ fn main() -> std::io::Result<()> {
             0x05 => handle_client_input(&mut state, &socket, payload, src),
             0x06 => handle_register_shard(&mut state, payload, src),
             0x07 => handle_client_disconnect(&mut state, &socket, payload),
+            0x08 => handle_route_to_topic(&mut state, &socket, payload),
             0x11 => handle_crossing_alert(&mut state, &socket, payload),
             0x12 => handle_authority_change(&mut state, &socket, payload),
             0x14 => handle_server_ready(&mut state, &socket, payload),
             _ => warn!("Tag inconnu: 0x{:02X}", tag),
         }
+    }
+}
+
+fn handle_route_to_topic(state: &mut BrokerState, socket: &UdpSocket, data: &[u8]) {
+    // 0x08 | topic(32) | payload
+    if data.len() < 32 {
+        return;
+    }
+    
+    let mut topic = [0u8; 32];
+    topic.copy_from_slice(&data[0..32]);
+    let payload = &data[32..];
+    
+    if let Some(route) = state.routes.get(&topic) {
+        let _ = socket.send_to(payload, route.authority_shard);
     }
 }
 
@@ -86,14 +102,10 @@ fn handle_crossing_alert(state: &mut BrokerState, socket: &UdpSocket, data: &[u8
     let client_id_bytes = data[0..4].try_into().unwrap();
     let client_id = u32::from_le_bytes(client_id_bytes);
 
-    if let Some(topics) = state.client_to_topics.get(&client_id) {
-        for topic in topics {
-            if let Some(route) = state.routes.get(topic) {
-                let mut shard_msg = vec![0x11];
-                shard_msg.extend_from_slice(data);
-                let _ = socket.send_to(&shard_msg, route.authority_shard);
-            }
-        }
+    if let Some(client_addr) = state.client_addresses.get(&client_id) {
+        let mut msg = vec![0x11];
+        msg.extend_from_slice(data);
+        let _ = socket.send_to(&msg, client_addr);
     }
 }
 
@@ -104,14 +116,10 @@ fn handle_authority_change(state: &mut BrokerState, socket: &UdpSocket, data: &[
     let client_id_bytes = data[0..4].try_into().unwrap();
     let client_id = u32::from_le_bytes(client_id_bytes);
 
-    if let Some(topics) = state.client_to_topics.get(&client_id) {
-        for topic in topics {
-            if let Some(route) = state.routes.get(topic) {
-                let mut shard_msg = vec![0x12];
-                shard_msg.extend_from_slice(data);
-                let _ = socket.send_to(&shard_msg, route.authority_shard);
-            }
-        }
+    if let Some(client_addr) = state.client_addresses.get(&client_id) {
+        let mut msg = vec![0x12];
+        msg.extend_from_slice(data);
+        let _ = socket.send_to(&msg, client_addr);
     }
 }
 
