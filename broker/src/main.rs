@@ -48,6 +48,7 @@ fn main() -> std::io::Result<()> {
             0x03 => handle_publish(&mut state, &socket, payload, src),
             0x05 => handle_client_input(&mut state, &socket, payload, src),
             0x06 => handle_register_shard(&mut state, payload, src),
+            0x07 => handle_client_disconnect(&mut state, &socket, payload),
             0x11 => handle_crossing_alert(&mut state, &socket, payload),
             _ => eprintln!("Tag inconnu: 0x{:02X}", tag),
         }
@@ -71,6 +72,37 @@ fn handle_crossing_alert(state: &mut BrokerState, socket: &UdpSocket, data: &[u8
         }
     }
 }
+
+fn handle_client_disconnect(state: &mut BrokerState, socket: &UdpSocket, data: &[u8]) {
+    if data.len() < 4 {
+        return;
+    }
+
+    if let Ok(client_id_bytes) = data[0..4].try_into() {
+        let client_id = u32::from_le_bytes(client_id_bytes);
+
+        // Notify all authority shards before cleaning up
+        if let Some(topics) = state.client_to_topics.get(&client_id) {
+            for topic in topics {
+                if let Some(route) = state.routes.get_mut(topic) {
+                    // Forward disconnect to shard
+                    let mut msg = [0u8; 5];
+                    msg[0] = 0x07;
+                    msg[1..5].copy_from_slice(&client_id_bytes);
+                    let _ = socket.send_to(&msg, route.authority_shard);
+
+                    // Clean up route client list
+                    route.clients.remove(&client_id);
+                }
+            }
+        }
+
+        // Complete cleanup
+        state.client_to_topics.remove(&client_id);
+        state.client_addresses.remove(&client_id);
+    }
+}
+
 
 fn handle_subscribe(state: &mut BrokerState, data: &[u8]) {
     if data.len() < 36 {
@@ -166,11 +198,12 @@ fn handle_client_input(state: &mut BrokerState, socket: &UdpSocket, data: &[u8],
             for topic in topics {
                 if let Some(route) = state.routes.get(topic) {
                     let mut shard_msg = [0u8; 512];
-                    shard_msg[0..4].copy_from_slice(&client_id_bytes);
-                    let total_len = 4 + input_payload.len();
+                    shard_msg[0] = 0x05;
+                    shard_msg[1..5].copy_from_slice(&client_id_bytes);
+                    let total_len = 5 + input_payload.len();
 
                     if total_len <= 512 {
-                        shard_msg[4..total_len].copy_from_slice(input_payload);
+                        shard_msg[5..total_len].copy_from_slice(input_payload);
                         let _ = socket.send_to(&shard_msg[..total_len], route.authority_shard);
                     }
                 }

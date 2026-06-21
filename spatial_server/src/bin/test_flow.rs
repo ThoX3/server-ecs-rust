@@ -1,5 +1,6 @@
 use std::process::Command;
 use std::time::Duration;
+use std::sync::Arc;
 use tokio::net::UdpSocket;
 use tokio::time::sleep;
 
@@ -52,18 +53,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     sleep(Duration::from_millis(500)).await;
 
     // 4. Create mock Client
-    let client = UdpSocket::bind("127.0.0.1:0").await?;
-    let client_id: u32 = 42;
-    println!("[TEST] Mock Client {} bounded at: {:?}", client_id, client.local_addr()?);
+    let client = Arc::new(UdpSocket::bind("127.0.0.1:0").await?);
+    println!("[TEST] Mock Client 42 bounded at: {:?}", client.local_addr()?);
+
+    // Subscribe client 42 to spatial_updates
+    let mut sub_msg = [0u8; 37];
+    sub_msg[0] = 0x01;
+    sub_msg[1..5].copy_from_slice(&42u32.to_le_bytes());
+    let topic_bytes = b"spatial_updates";
+    sub_msg[5..5 + topic_bytes.len()].copy_from_slice(topic_bytes);
+    client.send_to(&sub_msg, "127.0.0.1:9000").await?;
+
+    tokio::time::sleep(Duration::from_millis(100)).await;
 
     // --- STEP 1: Position Update -> Subscribing to Shard 0 ---
     println!("\n--- Step 1: Sending Position Update (-500.0, 500.0) ---");
-    let mut pos_msg = vec![0x10];
-    pos_msg.extend_from_slice(&client_id.to_le_bytes());
-    pos_msg.extend_from_slice(&(-500.0f32).to_le_bytes());
-    pos_msg.extend_from_slice(&(500.0f32).to_le_bytes());
-    
-    client.send_to(&pos_msg, "127.0.0.1:9001").await?;
+    let mut pos_msg = [0u8; 14];
+    pos_msg[0] = 0x05;
+    pos_msg[1..5].copy_from_slice(&42u32.to_le_bytes());
+    pos_msg[5] = 0x10;
+    pos_msg[6..10].copy_from_slice(&(-500.0f32).to_le_bytes());
+    pos_msg[10..14].copy_from_slice(&(500.0f32).to_le_bytes());
+    client.send_to(&pos_msg, "127.0.0.1:9000").await?;
     
     // Give it time to route the Subscribe
     sleep(Duration::from_millis(500)).await;
@@ -71,7 +82,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // --- STEP 2: Client Input routing ---
     println!("\n--- Step 2: Sending Client Input ---");
     let mut input_msg = vec![0x05];
-    input_msg.extend_from_slice(&client_id.to_le_bytes());
+    input_msg.extend_from_slice(&42u32.to_le_bytes());
     input_msg.extend_from_slice(b"Hello Shard 0!");
     
     client.send_to(&input_msg, "127.0.0.1:9000").await?; // send to broker
@@ -79,64 +90,83 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Listen on Shard 0
     let mut buf = [0u8; 1024];
     if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_secs(1), shard0.recv_from(&mut buf)).await {
-        let rec_client = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let payload = String::from_utf8_lossy(&buf[4..len]);
-        println!("[SUCCESS] Shard 0 received input from client {}: {}", rec_client, payload);
+        if buf[0] == 0x05 {
+            let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let payload = String::from_utf8_lossy(&buf[5..len]);
+            println!("[SUCCESS] Shard 0 received input from client {}: {}", rec_client, payload);
+        } else {
+            println!("[ERROR] Shard 0 received unexpected packet instead of input: {:X}", buf[0]);
+        }
     } else {
         println!("[ERROR] Shard 0 did not receive the client input!");
     }
 
     // --- STEP 3: Crossing Alert ---
     println!("\n--- Step 3: Moving near borders (-10.0, 10.0) ---");
-    let mut pos_msg2 = vec![0x10];
-    pos_msg2.extend_from_slice(&client_id.to_le_bytes());
-    pos_msg2.extend_from_slice(&(-10.0f32).to_le_bytes());
-    pos_msg2.extend_from_slice(&(10.0f32).to_le_bytes());
-    
-    client.send_to(&pos_msg2, "127.0.0.1:9001").await?;
+    let mut pos_msg2 = [0u8; 14];
+    pos_msg2[0] = 0x05;
+    pos_msg2[1..5].copy_from_slice(&42u32.to_le_bytes());
+    pos_msg2[5] = 0x10;
+    pos_msg2[6..10].copy_from_slice(&(-10.0f32).to_le_bytes());
+    pos_msg2[10..14].copy_from_slice(&(10.0f32).to_le_bytes());
+    client.send_to(&pos_msg2, "127.0.0.1:9000").await?;
 
     // Listen on Shard 0 for CrossingAlert (forwarded by broker)
-    if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_secs(1), shard0.recv_from(&mut buf)).await {
-        if buf[0] == 0x11 {
-            let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
-            let num_shards = buf[5];
-            let mut near_shards = Vec::new();
-            for i in 0..num_shards as usize {
-                let start = 6 + i*4;
-                let s_id = u32::from_le_bytes(buf[start..start+4].try_into().unwrap());
-                near_shards.push(s_id);
+    let mut found_alert = false;
+    let start_time = tokio::time::Instant::now();
+    while start_time.elapsed() < Duration::from_secs(1) {
+        if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_millis(100), shard0.recv_from(&mut buf)).await {
+            if buf[0] == 0x11 {
+                let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+                let num_shards = buf[5];
+                let mut near = vec![];
+                for i in 0..num_shards {
+                    let offset = 6 + (i as usize) * 4;
+                    near.push(u32::from_le_bytes(buf[offset..offset+4].try_into().unwrap()));
+                }
+                println!("[SUCCESS] Shard 0 received Crossing Alert for client {}! Near shards: {:?}", rec_client, near);
+                found_alert = true;
+                break;
+            } else if buf[0] == 0x05 {
+                // Ignore routed PositionUpdate
+                continue;
+            } else {
+                println!("[ERROR] Shard 0 received unexpected packet: {:X}", buf[0]);
             }
-            println!("[SUCCESS] Shard 0 received Crossing Alert for client {}! Near shards: {:?}", rec_client, near_shards);
-        } else {
-            println!("[ERROR] Shard 0 received unexpected packet: {:X}", buf[0]);
         }
-    } else {
-        println!("[ERROR] Shard 0 did not receive the crossing alert!");
+    }
+    if !found_alert {
+        println!("[ERROR] Shard 0 did not receive the Crossing Alert!");
     }
 
     // --- STEP 4: Handoff to Shard 1 ---
     println!("\n--- Step 4: Handoff to Shard 1 (500.0, 500.0) ---");
-    let mut pos_msg3 = vec![0x10];
-    pos_msg3.extend_from_slice(&client_id.to_le_bytes());
-    pos_msg3.extend_from_slice(&(500.0f32).to_le_bytes());
-    pos_msg3.extend_from_slice(&(500.0f32).to_le_bytes());
-    
-    client.send_to(&pos_msg3, "127.0.0.1:9001").await?;
+    let mut pos_msg3 = [0u8; 14];
+    pos_msg3[0] = 0x05;
+    pos_msg3[1..5].copy_from_slice(&42u32.to_le_bytes());
+    pos_msg3[5] = 0x10;
+    pos_msg3[6..10].copy_from_slice(&(500.0f32).to_le_bytes());
+    pos_msg3[10..14].copy_from_slice(&(500.0f32).to_le_bytes());
+    client.send_to(&pos_msg3, "127.0.0.1:9000").await?;
     
     sleep(Duration::from_millis(500)).await;
 
     // --- STEP 5: Verify new routing ---
     println!("\n--- Step 5: Sending Client Input after handoff ---");
     let mut input_msg2 = vec![0x05];
-    input_msg2.extend_from_slice(&client_id.to_le_bytes());
+    input_msg2.extend_from_slice(&42u32.to_le_bytes());
     input_msg2.extend_from_slice(b"Hello Shard 1!");
     
     client.send_to(&input_msg2, "127.0.0.1:9000").await?;
 
     if let Ok(Ok((len, _))) = tokio::time::timeout(Duration::from_secs(1), shard1.recv_from(&mut buf)).await {
-        let rec_client = u32::from_le_bytes(buf[0..4].try_into().unwrap());
-        let payload = String::from_utf8_lossy(&buf[4..len]);
-        println!("[SUCCESS] Shard 1 received input from client {}: {}", rec_client, payload);
+        if buf[0] == 0x05 {
+            let rec_client = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let payload = String::from_utf8_lossy(&buf[5..len]);
+            println!("[SUCCESS] Shard 1 received input from client {}: {}", rec_client, payload);
+        } else {
+            println!("[ERROR] Shard 1 received unexpected packet instead of input: {:X}", buf[0]);
+        }
     } else {
         println!("[ERROR] Shard 1 did not receive the client input!");
     }

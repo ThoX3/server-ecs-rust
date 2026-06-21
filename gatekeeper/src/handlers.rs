@@ -15,7 +15,7 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub player_id: String,
-    pub server: ServerInfo,
+    pub broker: ServerInfo,
 }
 
 #[derive(Serialize)]
@@ -55,19 +55,16 @@ pub async fn login_handler(
         ));
     }
 
-    let ip_str = addr.ip().to_string();
-    let target_zone = get_zone_for_ip(&ip_str);
+    let broker_host = std::env::var("BROKER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let broker_port: u16 = std::env::var("BROKER_PORT").unwrap_or_else(|_| "9000".to_string()).parse().unwrap_or(9000);
 
-    if let Some(server) = crate::redis_pool::find_available_server(&state.redis_pool, &target_zone).await {
-        let response = LoginResponse {
-            player_id: Uuid::new_v4().to_string(),
-            server,
-        };
-        Ok(Json(response))
-    } else {
-        Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse { error: "No server available".to_string() })
-        ))
-    }
+    let response = LoginResponse {
+        player_id: Uuid::new_v4().to_string(),
+        broker: ServerInfo {
+            ip: broker_host,
+            port: broker_port,
+            zone: "global".to_string(),
+        },
+    };
+    Ok(Json(response))
 }

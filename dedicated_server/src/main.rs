@@ -1,6 +1,4 @@
 use bevy::prelude::*;
-use game_sockets::protocols::UdpBackend;
-use game_sockets::{GameNetworkEvent, GamePeer};
 use serde::{Deserialize, Serialize};
 use shared::{Heartbeat, JoinRequest, WelcomeMessage};
 use std::net::{SocketAddr, UdpSocket as StdUdpSocket};
@@ -63,8 +61,18 @@ pub fn main() {
     // Start the dedicated server.
     let config = ServerConfig::from_env();
 
-    let peer = GamePeer::new(UdpBackend::new());
-    peer.listen("0.0.0.0", config.port).unwrap();
+    let socket = StdUdpSocket::bind(format!("0.0.0.0:{}", config.port)).unwrap();
+    socket.set_nonblocking(true).unwrap();
+
+    // Register all shards with the Broker
+    for shard in &config.shards {
+        let mut reg_msg = [0u8; 33];
+        reg_msg[0] = 0x06;
+        let topic_bytes = shard.as_bytes();
+        reg_msg[1..1 + topic_bytes.len()].copy_from_slice(topic_bytes);
+        let _ = socket.send_to(&reg_msg, config.broker_addr);
+        println!("Registered shard authority for: {}", shard);
+    }
 
     let inter_shard_port = config.port + 1000;
     let inter_socket = StdUdpSocket::bind(format!("0.0.0.0:{}", inter_shard_port)).unwrap();
@@ -85,7 +93,7 @@ pub fn main() {
         .add_plugins(MinimalPlugins)
         .insert_resource(config)
         .insert_resource(PlayerRegistry::default())
-        .insert_resource(ServerNetwork(peer))
+        .insert_resource(ServerNetwork(socket))
         .insert_resource(PlayerCount(player_count))
         .insert_resource(InterShardSocket(inter_socket))
         .init_resource::<CrossingAlertQueue>()
@@ -108,74 +116,72 @@ pub fn main() {
 
 fn handle_networks(
     mut commands: Commands,
-    mut network: ResMut<ServerNetwork>,
+    network: Res<ServerNetwork>,
     mut registry: ResMut<PlayerRegistry>,
     count: Res<PlayerCount>,
 ) {
-    while let Ok(Some(event)) = network.0.poll() {
-        match event {
-            GameNetworkEvent::Connected(conn) => {
-                println!("New connection: {:?}", conn);
+    let mut buf = [0u8; 2048];
+    while let Ok((amt, _src)) = network.0.recv_from(&mut buf) {
+        if amt < 1 {
+            continue;
+        }
+
+        let tag = buf[0];
+        if tag == 0x05 {
+            // Client Input routed by broker: 0x05 | client_id(4) | payload
+            if amt < 5 {
+                continue;
             }
-            GameNetworkEvent::Message {
-                connection,
-                stream,
-                data,
-            } => {
-                // Cas 1 : Le joueur est déjà connecté, on traite ses inputs de gameplay
-                if let Some(&player_entity) = registry.players.get(&connection) {
-                    let input_payload = &data[4..];
-                    if let Ok(input) = serde_json::from_slice::<PlayerInput>(&input_payload) {
-                        if let Ok(mut entity_commands) = commands.get_entity(player_entity) {
-                            entity_commands.insert(input);
-                        }
+            let client_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            let payload = &buf[5..amt];
+
+            // Ignore 0x10 Position Updates routed to the shard.
+            // These are meant for the Spatial Server, but because we are subscribed to
+            // the same Broker inputs, we might receive them.
+            if payload.len() > 0 && payload[0] == 0x10 {
+                continue;
+            }
+
+            if let Some(&player_entity) = registry.players.get(&client_id) {
+                if let Ok(input) = serde_json::from_slice::<PlayerInput>(payload) {
+                    if let Ok(mut entity_commands) = commands.get_entity(player_entity) {
+                        entity_commands.insert(input);
                     }
                 }
-                // Cas 2 : Le joueur n'est pas encore enregistré, on traite sa demande de connexion
-                else if let Ok(req) = serde_json::from_slice::<JoinRequest>(&data) {
-                    if !registry.players.contains_key(&connection) {
-                        let string_id = Uuid::new_v4().to_string();
-                        let numeric_id = rand::random::<u32>();
-                        let entity = commands
-                            .spawn((
-                                Player {
-                                    id: string_id.clone(),
-                                },
-                                Transform::default(),
-                                PlayerInput {
-                                    movement_x: 0.0,
-                                    movement_y: 0.0,
-                                },
-                                NetworkId(numeric_id),
-                                Authority::Owned,
-                                HandoffTickCount::default(),
-                            ))
-                            .id();
+            } else if let Ok(req) = serde_json::from_slice::<JoinRequest>(payload) {
+                // New player joining!
+                let string_id = Uuid::new_v4().to_string();
+                let entity = commands
+                    .spawn((
+                        Player {
+                            id: string_id.clone(),
+                        },
+                        Transform::default(),
+                        PlayerInput {
+                            movement_x: 0.0,
+                            movement_y: 0.0,
+                        },
+                        NetworkId(client_id),
+                        Authority::Owned,
+                        HandoffTickCount::default(),
+                    ))
+                    .id();
 
-                        registry.players.insert(connection, entity);
-                        count.0.fetch_add(1, Ordering::Relaxed);
-
-                        println!("Player {} joined", req.username);
-
-                        let resp = WelcomeMessage {
-                            player_id: string_id,
-                        };
-                        if let Ok(bytes) = serde_json::to_vec(&resp) {
-                            let _ = network
-                                .0
-                                .send(&connection, &stream, bytes::Bytes::from(bytes));
-                        }
-                    }
-                }
+                registry.players.insert(client_id, entity);
+                count.0.fetch_add(1, Ordering::Relaxed);
+                println!("Player {} joined shard", req.username);
             }
-            GameNetworkEvent::Disconnected(conn) => {
-                if let Some(entity) = registry.players.remove(&conn) {
-                    commands.entity(entity).despawn();
-                    count.0.fetch_sub(1, Ordering::Relaxed);
-                }
-                println!("Deconnexion : {:?}", conn);
+        } else if tag == 0x07 {
+            // Disconnect packet from Broker
+            if amt < 5 {
+                continue;
             }
-            _ => {}
+            let client_id = u32::from_le_bytes(buf[1..5].try_into().unwrap());
+            if let Some(entity) = registry.players.remove(&client_id) {
+                commands.entity(entity).despawn();
+                count.0.fetch_sub(1, Ordering::Relaxed);
+                println!("Client {} disconnected from shard", client_id);
+            }
         }
     }
 }
