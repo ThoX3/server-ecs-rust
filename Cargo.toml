@@ -6,7 +6,8 @@ members = [
     "orchestrator",
     "gatekeeper",
     "game_sockets",
-    "broker"
+    "broker",
+    "spatial_server"
 ]
 
 [profile.release]

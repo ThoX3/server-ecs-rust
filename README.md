@@ -1,25 +1,32 @@
 # MMORPG Server Architecture
 
-Ce projet déploie une architecture de serveurs avancée pour un monde continu (MMO), divisée en six composants distincts intégrant un routage PubSub, un partitionnement par QuadTree et un mécanisme d'autorité flexible.
+Ce projet déploie une architecture de serveurs avancée pour un monde continu (MMO), divisée en six composants distincts
+intégrant un routage PubSub, un partitionnement par QuadTree et un mécanisme d'autorité flexible.
 
 ## Architecture du Projet
 
 ### `shared`
+
 * **Rôle :** Bibliothèque centrale de types et structures de données communes.
 
 ### `dedicated_server` (Le Shard)
+
 * **Rôle :** Serveur de jeu minimaliste propulsé par Bevy 0.18.1.
 
 ### `orchestrator`
+
 * **Rôle :** Gestionnaire asynchrone de la flotte (Tokio).
 
 ### `gatekeeper`
+
 * **Rôle :** API REST (Axum) servant de point d'entrée unique.
 
 ### `broker`
+
 * **Rôle :** Courtier réseau PubSub binaire utilisant `game_sockets`.
 
 ### `spatial_server`
+
 * **Rôle :** Gestionnaire de l'Area of Interest (AoI) et du partitionnement.
 
 ---
@@ -27,11 +34,12 @@ Ce projet déploie une architecture de serveurs avancée pour un monde continu (
 1. **Connexion :** Client ➔ Gatekeeper (HTTP) ➔ Reçoit l'IP et le Port du Broker.
 2. **Boucle de Jeu :** Client ➔ Broker (UDP `ClientInput`) ➔ Shard Autoritaire (`Owned`).
 3. **Réplication :** Shard ➔ Broker (UDP `Publish`) ➔ Clients Abonnés (UDP `Broadcast`).
-4. **Abonnement Spatial :** Shard ➔ Spatial Server (UDP `PositionUpdate`) ➔ QuadTree ➔ Broker (Commandes `Subscribe` / `Unsubscribe`).
+4. **Abonnement Spatial :** Shard ➔ Spatial Server (UDP `PositionUpdate`) ➔ QuadTree ➔ Broker (Commandes `Subscribe` /
+   `Unsubscribe`).
 
 ## 1. Diagramme d'Architecture Globale
 
-Voici comment s'organisent les composants de l'infrastructure. 
+Voici comment s'organisent les composants de l'infrastructure.
 
     ┌────────────────────────────────────────────────────────┐
     │                      CLIENT (fictif)                   │
@@ -81,7 +89,8 @@ Voici comment s'organisent les composants de l'infrastructure.
 
 ## 2. Diagramme de Séquence : Authentification et Protocole de Handoff
 
-Ce diagramme illustre le cycle de vie complet, divisé en trois phases distinctes : la connexion initiale, la boucle de mouvement standard, et la procédure de transfert d'autorité lorsqu'un joueur franchit une frontière entre deux shards.
+Ce diagramme illustre le cycle de vie complet, divisé en trois phases distinctes : la connexion initiale, la boucle de
+mouvement standard, et la procédure de transfert d'autorité lorsqu'un joueur franchit une frontière entre deux shards.
 
 ```text
   CLIENT         GATEKEEPER          BROKER        SERVICE SPATIAL       SHARD 0           SHARD 1
@@ -133,12 +142,15 @@ Ce diagramme illustre le cycle de vie complet, divisé en trois phases distincte
     │                 │                 │                 │                 │     OWNED       │
     │                 │                 │                 │                 │     à GHOST     │
 ```
+
 ---
 
 ## Instructions de Lancement
 
 ### Démarrer l'infrastructure complète
-Lancez l'instance de notre projet complet grâce au fichier `docker-compose.yml` : 
+
+Lancez l'instance de notre projet complet grâce au fichier `docker-compose.yml` :
+
 ```bash
 docker-compose up --build -d
 ```

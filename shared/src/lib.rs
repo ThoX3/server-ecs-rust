@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 
+pub mod quadtree;
+pub mod logger;
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct Heartbeat {
     pub id: String,
@@ -8,6 +11,7 @@ pub struct Heartbeat {
     pub zone: String,
     pub player_count: usize,
     pub max_players: usize,
+    pub shards: Vec<u32>,
     pub status: String,
 }
 

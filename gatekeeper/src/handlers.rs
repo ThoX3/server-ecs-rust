@@ -1,10 +1,10 @@
-use axum::{extract::State, Json};
-use serde::{Deserialize, Serialize};
-use uuid::Uuid;
-use std::sync::Arc;
-use shared::ServerInfo;
 use crate::AppState;
 use axum::http::StatusCode;
+use axum::{extract::State, Json};
+use serde::{Deserialize, Serialize};
+use shared::ServerInfo;
+use std::sync::Arc;
+use uuid::Uuid;
 
 #[derive(Deserialize)]
 pub struct LoginRequest {
@@ -15,7 +15,7 @@ pub struct LoginRequest {
 #[derive(Serialize)]
 pub struct LoginResponse {
     pub player_id: String,
-    pub server: ServerInfo,
+    pub broker: ServerInfo,
 }
 
 #[derive(Serialize)]
@@ -43,8 +43,8 @@ fn get_zone_for_ip(ip: &str) -> String {
 }
 
 pub async fn login_handler(
-    axum::extract::ConnectInfo(addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
-    State(state): State<Arc<AppState>>,
+    axum::extract::ConnectInfo(_addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
+    State(_state): State<Arc<AppState>>,
     Json(payload): Json<LoginRequest>,
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Validate credentials and route to a server.
@@ -55,19 +55,16 @@ pub async fn login_handler(
         ));
     }
 
-    let ip_str = addr.ip().to_string();
-    let target_zone = get_zone_for_ip(&ip_str);
+    let broker_host = std::env::var("BROKER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+    let broker_port: u16 = std::env::var("BROKER_PORT").unwrap_or_else(|_| "9000".to_string()).parse().unwrap_or(9000);
 
-    if let Some(server) = crate::redis_pool::find_available_server(&state.redis_pool, &target_zone).await {
-        let response = LoginResponse {
-            player_id: Uuid::new_v4().to_string(),
-            server,
-        };
-        Ok(Json(response))
-    } else {
-        Err((
-            StatusCode::SERVICE_UNAVAILABLE,
-            Json(ErrorResponse { error: "No server available".to_string() })
-        ))
-    }
+    let response = LoginResponse {
+        player_id: Uuid::new_v4().to_string(),
+        broker: ServerInfo {
+            ip: broker_host,
+            port: broker_port,
+            zone: "global".to_string(),
+        },
+    };
+    Ok(Json(response))
 }

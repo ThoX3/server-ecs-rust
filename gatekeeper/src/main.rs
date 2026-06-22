@@ -1,7 +1,8 @@
 use axum::{routing::{get, post}, Router};
 use deadpool_redis::{Config, Runtime};
-use std::sync::Arc;
+use shared::logger::info;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 mod handlers;
 mod redis_pool;
@@ -12,6 +13,7 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() {
+    shared::logger::init_logger("Gatekeeper");
     // Start the HTTP gateway.
     let redis_url = std::env::var("REDIS_URL").unwrap_or_else(|_| "redis://127.0.0.1:6379".to_string());
     let cfg = Config::from_url(redis_url);
@@ -27,7 +29,7 @@ async fn main() {
     let port: u16 = std::env::var("PORT").unwrap_or_else(|_| "3000".to_string()).parse().unwrap();
     let addr = SocketAddr::from(([0, 0, 0, 0], port));
 
-    println!("Gatekeeper listening on {}", addr);
+    info!("Gatekeeper listening on {}", addr);
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
     axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
 }

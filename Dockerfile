@@ -33,5 +33,7 @@ RUN apt-get update && apt-get install -y \
 COPY --from=builder /app/target/release/gatekeeper .
 COPY --from=builder /app/target/release/orchestrator .
 COPY --from=builder /app/target/release/dedicated_server .
+COPY --from=builder /app/target/release/broker .
+COPY --from=builder /app/target/release/spatial_server .
 
-RUN chmod +x gatekeeper orchestrator dedicated_server
+RUN chmod +x gatekeeper orchestrator dedicated_server broker spatial_server
