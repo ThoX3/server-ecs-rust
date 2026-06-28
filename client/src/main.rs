@@ -12,7 +12,13 @@ struct Player {
 }
 
 #[derive(Component)]
+struct TargetPosition(Vec2);
+
+#[derive(Component)]
 struct LocalPlayer;
+
+#[derive(Component)]
+struct ServerAuthGhost;
 
 #[derive(Serialize)]
 struct LoginRequest {
@@ -43,8 +49,8 @@ struct ClientState {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct PlayerInput {
-    pub movement_x: f32,
-    pub movement_y: f32,
+    pub x: f32,
+    pub y: f32,
 }
 
 fn main() {
@@ -106,8 +112,22 @@ fn main() {
             known_players: std::collections::HashSet::new(),
         })
         .add_systems(Startup, setup)
-        .add_systems(Update, (handle_network, handle_input, draw_grid, camera_follow, cleanup_disconnected_players))
+        .add_systems(Update, (handle_network, handle_input, draw_grid, camera_follow, cleanup_disconnected_players, interpolate_positions))
         .run();
+}
+
+fn interpolate_positions(
+    time: Res<Time>,
+    mut query: Query<(&mut Transform, &TargetPosition), Without<LocalPlayer>>,
+) {
+    let dt = time.delta_secs();
+    let lerp_factor = (dt * 15.0).min(1.0);
+    for (mut transform, target) in query.iter_mut() {
+        let current = transform.translation.truncate();
+        let next = current.lerp(target.0, lerp_factor);
+        transform.translation.x = next.x;
+        transform.translation.y = next.y;
+    }
 }
 
 fn cleanup_disconnected_players(
@@ -126,6 +146,25 @@ fn cleanup_disconnected_players(
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
+    
+    // UI Legend
+    commands.spawn((
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(10.0),
+            left: Val::Px(10.0),
+            ..default()
+        },
+    )).with_children(|parent| {
+        parent.spawn((
+            Text::new("Green: Local Player\nBlue: Server Auth\nRed: Others\nGrey: Disconnected"),
+            TextFont {
+                font_size: 20.0,
+                ..default()
+            },
+            TextColor(Color::WHITE),
+        ));
+    });
 }
 
 impl Drop for NetworkConfig {
@@ -142,7 +181,9 @@ fn handle_network(
     mut commands: Commands,
     network: Res<NetworkConfig>,
     mut state: ResMut<ClientState>,
-    mut players: Query<(Entity, &mut Player, &mut Transform)>,
+    mut players: Query<(Entity, &mut Player, &mut TargetPosition)>,
+    mut local_transforms: Query<&mut Transform, With<LocalPlayer>>,
+    mut ghosts: Query<&mut TargetPosition, (With<ServerAuthGhost>, Without<Player>)>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     time: Res<Time>,
@@ -180,10 +221,27 @@ fn handle_network(
                 // info!("Parsed player {} at ({}, {})", p_id, x, y);
 
                 let mut found_in_ecs = false;
-                for (_, mut player, mut transform) in players.iter_mut() {
+                for (_, mut player, mut target_pos) in players.iter_mut() {
                     if player.id == p_id {
-                        transform.translation.x = x;
-                        transform.translation.y = y;
+                        if p_id != network.client_id {
+                            target_pos.0 = Vec2::new(x, y);
+                        } else {
+                            for mut ghost_target in ghosts.iter_mut() {
+                                ghost_target.0 = Vec2::new(x, y);
+                            }
+                            // Client-side prediction correction!
+                            // If the server's authoritative position diverges from our local prediction
+                            // by more than a threshold, snap back to the server's position.
+                            for mut local_transform in local_transforms.iter_mut() {
+                                let server_pos = Vec2::new(x, y);
+                                let local_pos = local_transform.translation.truncate();
+                                if server_pos.distance(local_pos) > 100.0 {
+                                    local_transform.translation.x = server_pos.x;
+                                    local_transform.translation.y = server_pos.y;
+                                    warn!("Server correction applied! Snapped back to {:?}", server_pos);
+                                }
+                            }
+                        }
                         player.last_seen = time.elapsed_secs();
                         found_in_ecs = true;
                     }
@@ -206,11 +264,20 @@ fn handle_network(
                         Mesh2d(meshes.add(Rectangle::new(30.0, 30.0))),
                         MeshMaterial2d(materials.add(color)),
                         Transform::from_xyz(x, y, 0.0),
+                        TargetPosition(Vec2::new(x, y)),
                         Player { id: p_id, last_seen: time.elapsed_secs() },
                     ));
 
                     if p_id == network.client_id {
                         cmd.insert(LocalPlayer);
+
+                        commands.spawn((
+                            Mesh2d(meshes.add(Rectangle::new(30.0, 30.0))),
+                            MeshMaterial2d(materials.add(Color::srgba(0.0, 0.0, 1.0, 0.5))),
+                            Transform::from_xyz(x, y, 1.0),
+                            TargetPosition(Vec2::new(x, y)),
+                            ServerAuthGhost,
+                        ));
                     }
                 }
                 
@@ -257,6 +324,7 @@ fn handle_input(
     mut last_log_time: Local<f32>,
     mut last_input_was_zero: Local<bool>,
     time: Res<Time>,
+    mut player_query: Query<&mut Transform, With<LocalPlayer>>,
 ) {
     let now = time.elapsed_secs();
     let should_log = now - *last_log_time > 1.0;
@@ -298,42 +366,45 @@ fn handle_input(
         return;
     }
 
-    let mut move_x = 0.0;
-    let mut move_y = 0.0;
+    let mut dir_x: f32 = 0.0;
+    let mut dir_y: f32 = 0.0;
     let speed = 300.0; // 300 units per second
 
-    if keyboard.pressed(KeyCode::KeyW) {
-        move_y += speed;
+    if keyboard.pressed(KeyCode::KeyW) { dir_y += 1.0; }
+    if keyboard.pressed(KeyCode::KeyS) { dir_y -= 1.0; }
+    if keyboard.pressed(KeyCode::KeyA) { dir_x -= 1.0; }
+    if keyboard.pressed(KeyCode::KeyD) { dir_x += 1.0; }
+
+    // Normalize direction so diagonal movement isn't faster
+    if dir_x != 0.0 || dir_y != 0.0 {
+        let len = (dir_x * dir_x + dir_y * dir_y).sqrt();
+        dir_x /= len;
+        dir_y /= len;
     }
-    if keyboard.pressed(KeyCode::KeyS) {
-        move_y -= speed;
+    
+    for mut local_transform in player_query.iter_mut() {
+        local_transform.translation.x += dir_x * speed * time.delta_secs();
+        local_transform.translation.y += dir_y * speed * time.delta_secs();
+
+        let is_zero = dir_x == 0.0 && dir_y == 0.0;
+
+        if is_zero && *last_input_was_zero {
+            continue; // Don't waste bandwidth when idle
+        }
+
+        *last_input_was_zero = is_zero;
+
+        let input = PlayerInput {
+            x: local_transform.translation.x,
+            y: local_transform.translation.y,
+        };
+        let payload = serde_json::to_vec(&input).unwrap();
+
+        let mut msg = vec![0x05];
+        msg.extend_from_slice(&network.client_id.to_le_bytes());
+        msg.extend_from_slice(&payload);
+        let _ = network.socket.send_to(&msg, &network.broker_addr);
     }
-    if keyboard.pressed(KeyCode::KeyA) {
-        move_x -= speed;
-    }
-    if keyboard.pressed(KeyCode::KeyD) {
-        move_x += speed;
-    }
-
-    let is_zero = move_x == 0.0 && move_y == 0.0;
-
-    if is_zero && *last_input_was_zero {
-        return; // Don't waste bandwidth when idle
-    }
-
-    *last_input_was_zero = is_zero;
-
-    let input = PlayerInput {
-        movement_x: move_x,
-        movement_y: move_y,
-    };
-    let payload = serde_json::to_vec(&input).unwrap();
-
-    let mut msg = vec![0x05];
-    msg.extend_from_slice(&network.client_id.to_le_bytes());
-    msg.extend_from_slice(&payload);
-
-    let _ = network.socket.send_to(&msg, &network.broker_addr);
 }
 
 fn draw_grid(mut gizmos: Gizmos) {

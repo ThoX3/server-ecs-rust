@@ -24,8 +24,8 @@ pub struct Player {
 /// The current movement inputs requested by the player (e.g. from pressing W A S D)
 #[derive(Component, Serialize, Deserialize, Clone, Debug)]
 pub struct PlayerInput {
-    pub movement_x: f32,
-    pub movement_y: f32,
+    pub x: f32,
+    pub y: f32,
 }
 
 /// A global shared resource holding the player count.
@@ -284,7 +284,7 @@ fn handle_networks(
                         .spawn((
                             Player { id: string_id.clone() },
                             Transform::from_xyz(x, y, 0.0),
-                            PlayerInput { movement_x: 0.0, movement_y: 0.0 },
+                            PlayerInput { x: 0.0, y: 0.0 },
                             NetworkId(client_id),
                             Authority::Ghost, // Mark as Ghost so we don't calculate physics for them!
                         ))
@@ -321,7 +321,7 @@ fn handle_networks(
                             .spawn((
                                 Player { id: string_id.clone() },
                                 Transform::from_xyz(x, y, 0.0),
-                                PlayerInput { movement_x: 0.0, movement_y: 0.0 },
+                                PlayerInput { x: 0.0, y: 0.0 },
                                 NetworkId(client_id),
                                 Authority::Ghost,
                             ))
@@ -356,7 +356,7 @@ fn handle_networks(
                     .spawn((
                         Player { id: string_id.clone() },
                         Transform::from_xyz(0.0, 0.0, 0.0),
-                        PlayerInput { movement_x: 0.0, movement_y: 0.0 },
+                        PlayerInput { x: 0.0, y: 0.0 },
                         NetworkId(client_id),
                         Authority::Owned, // We own their physics!
                     ))
@@ -409,18 +409,14 @@ fn handle_networks(
 /// Applies movement vectors to entity positions.
 /// Notice how it explicitly skips entities with `Authority::Ghost`!
 fn move_players(
-    time: Res<Time>,
     config: Res<ServerConfig>,
     mut query: Query<(&PlayerInput, &mut Transform, &Authority, &NetworkId), With<Player>>,
 ) {
     for (input, mut transform, authority, net_id) in query.iter_mut() {
         if !matches!(authority, Authority::Ghost { .. }) {
-            let speed = 5.0;
-            // Standard frame-independent movement logic
-            transform.translation.x += input.movement_x * speed * time.delta_secs();
-            transform.translation.y += input.movement_y * speed * time.delta_secs();
-            
-            if input.movement_x != 0.0 || input.movement_y != 0.0 {
+            if transform.translation.x != input.x || transform.translation.y != input.y {
+                transform.translation.x = input.x;
+                transform.translation.y = input.y;
                 info!("[{}] Moving player {} to ({}, {})", config.id, net_id.0, transform.translation.x, transform.translation.y);
             }
         }
