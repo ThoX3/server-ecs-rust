@@ -42,6 +42,8 @@ fn get_zone_for_ip(ip: &str) -> String {
     }
 }
 
+use shared::logger::{info, warn};
+
 pub async fn login_handler(
     axum::extract::ConnectInfo(_addr): axum::extract::ConnectInfo<std::net::SocketAddr>,
     State(_state): State<Arc<AppState>>,
@@ -49,6 +51,7 @@ pub async fn login_handler(
 ) -> Result<Json<LoginResponse>, (StatusCode, Json<ErrorResponse>)> {
     // Validate credentials and route to a server.
     if payload.username.is_empty() || payload.password.as_deref() != Some("1234") {
+        warn!("Failed login attempt for username: '{}' from IP: {}", payload.username, _addr.ip());
         return Err((
             StatusCode::UNAUTHORIZED,
             Json(ErrorResponse { error: "Invalid credentials".to_string() })
@@ -57,6 +60,8 @@ pub async fn login_handler(
 
     let broker_host = std::env::var("BROKER_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
     let broker_port: u16 = std::env::var("BROKER_PORT").unwrap_or_else(|_| "9000".to_string()).parse().unwrap_or(9000);
+
+    info!("Successful login for username: '{}'. Handing off to Broker at {}:{}", payload.username, broker_host, broker_port);
 
     let response = LoginResponse {
         player_id: Uuid::new_v4().to_string(),

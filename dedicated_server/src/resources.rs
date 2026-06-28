@@ -40,7 +40,7 @@ impl ServerConfig {
             .unwrap();
 
         let shards_str = std::env::var("SHARDS").unwrap_or_else(|_| "shard:0".to_string());
-        let shards = shards_str.split(',').map(|s| s.to_string()).collect();
+        let shards = shards_str.split(',').filter(|s| !s.is_empty()).map(|s| s.to_string()).collect();
 
         Self {
             id: Uuid::new_v4().simple().to_string(),
