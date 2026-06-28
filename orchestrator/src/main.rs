@@ -168,7 +168,7 @@ async fn heartbeat_listener(
                 "available"
             };
 
-            info!("Heartbeat traité pour le serveur {} (Statut: {})", hb.id, status);
+            // info!("Heartbeat traité pour le serveur {} (Statut: {})", hb.id, status);
             let mut fleet_lock = fleet.lock().await;
             fleet_lock.insert(hb.id.clone(), ServerState {
                 heartbeat: hb,
@@ -235,11 +235,20 @@ async fn scaler_loop(fleet: Arc<Mutex<HashMap<String, ServerState>>>) -> Result<
             let needed = hot_min - available_count;
             warn!("Alerte sous-effectif ! Lancement de {} serveur(s) dédié(s)...", needed);
 
+            let mut gave_shard_0 = available_count > 0;
+
             for _ in 0..needed {
                 let port = next_port_to_use;
                 next_port_to_use += 1;
 
-                if let Err(e) = spawn_server(port, vec![0], None) {
+                let assigned_shards = if !gave_shard_0 {
+                    gave_shard_0 = true;
+                    vec![0]
+                } else {
+                    vec![]
+                };
+
+                if let Err(e) = spawn_server(port, assigned_shards, None) {
                     error!("Impossible de spawner le serveur sur le port {}: {:?}", port, e);
                 }
             }
